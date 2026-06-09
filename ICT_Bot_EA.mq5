@@ -409,11 +409,8 @@ void ProcessSymbol(string symbol)
    if(SymbolInfoInteger(symbol, SYMBOL_SPREAD) > InpMaxSpread) return;
    if(HasOpenPosition(symbol)) return;
    
-   //--- Only process on new LTF bar (avoid multiple signals per candle)
-   static datetime lastBar = 0;
-   datetime currentBar = iTime(symbol, InpLTF, 0);
-   if(currentBar == lastBar) return;
-   lastBar = currentBar;
+   //--- Only process on new LTF bar (PER-SYMBOL, avoid multiple signals per candle)
+   if(!IsNewBar(symbol)) return;
    
    //====================================================================
    // PHASE 1: KILL ZONE CHECK
@@ -1302,6 +1299,9 @@ void ExecuteTrade(string symbol, TradeSetup &setup)
    double lotSize = CalculateLotSize(symbol, MathAbs(setup.entry - setup.sl));
    if(lotSize <= 0) return;
    
+   //--- Set correct filling mode for this symbol (avoids trade failures)
+   SetFillingForSymbol(symbol);
+   
    bool result = false;
    
    if(setup.direction == 1)
@@ -1417,5 +1417,49 @@ bool HasOpenPosition(string symbol)
       }
    }
    return false;
+}
+
+//+------------------------------------------------------------------+
+//| NEW BAR DETECTION (per-symbol)                                     |
+//| Returns true only once per new LTF candle for each symbol          |
+//+------------------------------------------------------------------+
+bool IsNewBar(string symbol)
+{
+   static string   syms[];
+   static datetime times[];
+
+   int idx = -1;
+   for(int i = 0; i < ArraySize(syms); i++)
+   {
+      if(syms[i] == symbol) { idx = i; break; }
+   }
+   if(idx == -1)
+   {
+      idx = ArraySize(syms);
+      ArrayResize(syms,  idx + 1);
+      ArrayResize(times, idx + 1);
+      syms[idx]  = symbol;
+      times[idx] = 0;
+   }
+
+   datetime cur = iTime(symbol, InpLTF, 0);
+   if(cur == times[idx]) return false;
+   times[idx] = cur;
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| SET CORRECT FILLING MODE FOR SYMBOL                                |
+//| Avoids "Unsupported filling mode" trade failures                   |
+//+------------------------------------------------------------------+
+void SetFillingForSymbol(string symbol)
+{
+   long filling = SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) != 0)
+      trade.SetTypeFilling(ORDER_FILLING_FOK);
+   else if((filling & SYMBOL_FILLING_IOC) != 0)
+      trade.SetTypeFilling(ORDER_FILLING_IOC);
+   else
+      trade.SetTypeFilling(ORDER_FILLING_RETURN);
 }
 //+------------------------------------------------------------------+
