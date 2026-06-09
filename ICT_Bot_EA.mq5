@@ -23,9 +23,9 @@ input ENUM_TIMEFRAMES InpCRT_TF      = PERIOD_H1;     // CRT: Candle Range Timef
 
 //--- Kill Zone Settings (Server Time - Adjust for your broker)
 input int      InpLondonStart        = 2;    // London Kill Zone Start (Server Hour)
-input int      InpLondonEnd          = 5;    // London Kill Zone End (Server Hour)
+input int      InpLondonEnd          = 6;    // London Kill Zone End (Server Hour)
 input int      InpNYStart            = 8;    // NY Kill Zone Start (Server Hour)
-input int      InpNYEnd              = 11;   // NY Kill Zone End (Server Hour)
+input int      InpNYEnd              = 12;   // NY Kill Zone End (Server Hour)
 input bool     InpAsianFilter        = true; // Use Asian Range as liquidity reference
 
 //--- Liquidity Settings (HTF)
@@ -91,12 +91,12 @@ input double   InpPA_RejWickRatio    = 0.50; // Min rejection-wick ratio at entr
 
 //--- CONFLUENCE GATE (quality filter)
 input bool     InpUseConfluenceGate  = true; // Require minimum confluence score
-input int      InpMinConfluenceScore = 6;    // Min score to take a trade (higher = stricter)
+input int      InpMinConfluenceScore = 4;    // Min score to take a trade (4 = valid setup; raise for stricter)
 
 //--- Risk Management
 input double   InpRiskPercent        = 1.0;  // Risk Per Trade (%)
 input double   InpRR_Ratio           = 3.0;  // Minimum Risk:Reward Ratio
-input int      InpMaxTradesPerDay    = 2;    // Max Trades Per Day
+input int      InpMaxTradesPerDay    = 4;    // Max Trades Per Day
 input int      InpMagicNumber        = 202200; // Magic Number
 input double   InpMaxSpread          = 25.0; // Max Spread (points)
 
