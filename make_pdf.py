@@ -175,7 +175,10 @@ def build_pdf(pages, path):
     for i in range(N):
         page_num = 5 + 2 * i
         cont_num = 6 + 2 * i
-        objects[page_num] = ('<< /Type /Page /Parent 2 0 R /Contents %d 0 R >>' % cont_num).encode('latin-1')
+        objects[page_num] = (('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.0f %.0f] '
+                              '/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> '
+                              '/Contents %d 0 R >>')
+                             % (PAGE_W, PAGE_H, cont_num)).encode('latin-1')
         data = page_stream(pages[i])
         stream = b'<< /Length %d >>\nstream\n' % len(data) + data + b'\nendstream'
         objects[cont_num] = stream
