@@ -66,6 +66,7 @@ input double   InpSL_Max_ATR        = 1.0;   // Max SL (x ATR) - HARD CAP 1xATR!
 // Result: Win = full TP2 ($90+), Loss = SL ($45) or Breakeven ($0)
 input double   InpTP1_RR            = 1.5;   // TP1: Move to BREAKEVEN only (no close!)
 input double   InpTP2_RR            = 3.0;   // TP2: FULL CLOSE here (actual TP = 3x Risk!)
+input double   InpTP3_RR            = 5.0;   // TP3: Used for trailing / logging only
 input double   InpMinRR             = 2.0;   // Minimum RR to accept ANY trade
 input bool     InpMoveToBreakeven   = true;  // Move SL to breakeven at TP1 level
 
