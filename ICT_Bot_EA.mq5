@@ -41,16 +41,16 @@ input double   InpFVG_ATR_MinSize    = 0.15;  // Min FVG size (x ATR)
 input int      InpSweep_Lookback     = 30;    // Swing H/L lookback
 input double   InpSweep_ATR_Thresh   = 0.1;   // Sweep threshold (x ATR)
 
-//--- Stop Loss (ATR-based, tight)
+//--- Stop Loss (ATR-based, TIGHT - cap losses)
 input int      InpATR_Period         = 14;    // ATR Period
-input double   InpSL_ATR_Mult       = 1.0;   // SL = structure + (X * ATR)
-input double   InpSL_Min_ATR        = 0.8;   // Minimum SL distance (x ATR)
-input double   InpSL_Max_ATR        = 3.0;   // Maximum SL distance (x ATR)
+input double   InpSL_ATR_Mult       = 0.5;   // SL buffer (x ATR) - tighter
+input double   InpSL_Min_ATR        = 0.5;   // Min SL (x ATR) - tight!
+input double   InpSL_Max_ATR        = 1.5;   // Max SL (x ATR) - cap losses!
 
-//--- Take Profit (3 TPs - Partial Close)
-input double   InpTP1_RR            = 1.0;   // TP1: Risk:Reward (close 40%)
-input double   InpTP2_RR            = 2.0;   // TP2: Risk:Reward (close 30%)
-input double   InpTP3_RR            = 3.0;   // TP3: Risk:Reward (close 30%)
+//--- Take Profit (3 TPs - WIDER for better RR)
+input double   InpTP1_RR            = 1.5;   // TP1: 1:1.5 (close 40%)
+input double   InpTP2_RR            = 2.5;   // TP2: 1:2.5 (close 30%)
+input double   InpTP3_RR            = 4.0;   // TP3: 1:4 (close 30%)
 input double   InpTP1_ClosePercent  = 40.0;  // TP1: % to close
 input double   InpTP2_ClosePercent  = 30.0;  // TP2: % to close
 input bool     InpMoveToBreakeven   = true;  // Move SL to breakeven at TP1
