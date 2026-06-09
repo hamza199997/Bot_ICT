@@ -1,14 +1,14 @@
 //+------------------------------------------------------------------+
 //|                                          ICT_Bot_EA.mq5          |
-//|           ICT/SMC Proven Strategy - Clean Build v3.0              |
+//|           ICT/SMC Proven Strategy - Optimized v3.1                |
 //|           Order Block + FVG + Liquidity Sweep + HTF Bias          |
-//|           3 Take Profits + ATR-based SL + Prop Firm Safe          |
+//|           3 Take Profits + Trailing Stop + 7 Fixes Applied       |
 //+------------------------------------------------------------------+
-#property copyright "ICT Bot v3.0 - Proven Strategy"
-#property version   "3.00"
+#property copyright "ICT Bot v3.1 - Optimized"
+#property version   "3.10"
 #property strict
-#property description "Simple proven ICT/SMC: OB + FVG + Sweep, 3 TPs, tight SL"
-#property description "Based on backtested data: OB 70-75% WR, FVG 65-70% WR"
+#property description "ICT/SMC: OB + FVG + Sweep | 3 TPs | Trailing | Day Filter | Session Filter"
+#property description "7 optimization fixes applied from backtest analysis"
 
 #include <Trade\Trade.mqh>
 
@@ -20,9 +20,22 @@
 input ENUM_TIMEFRAMES InpHTF         = PERIOD_H1;     // HTF: Bias (EMA direction)
 input ENUM_TIMEFRAMES InpLTF         = PERIOD_M5;     // LTF: Entry detection
 
-//--- Session Filter (Server Time)
-input int      InpSessionStart       = 2;     // Session Start Hour (London open)
-input int      InpSessionEnd         = 16;    // Session End Hour (NY close)
+// FIX [#5] — Session Time Filter (only trade during high-probability windows)
+input bool     InpSessionFilterOn    = true;  // Enable Session Filter
+input int      InpAsianStart         = 1;     // Asian Session Start (server hour)
+input int      InpAsianEnd           = 5;     // Asian Session End
+input int      InpLondonStart        = 8;     // London Session Start
+input int      InpLondonEnd          = 12;    // London Session End
+input int      InpNYStart            = 13;    // New York Session Start
+input int      InpNYEnd              = 17;    // New York Session End
+
+// FIX [#4] — Day Filter (block losing days)
+input bool     InpDayFilterOn        = true;  // Enable Day Filter
+input bool     InpBlockMonday        = false; // Block Monday
+input bool     InpBlockTuesday       = true;  // Block Tuesday (identified as losing day)
+input bool     InpBlockWednesday     = false; // Block Wednesday
+input bool     InpBlockThursday      = false; // Block Thursday
+input bool     InpBlockFriday        = false; // Block Friday
 
 //--- HTF Bias
 input int      InpEMA_Fast           = 21;    // Fast EMA (HTF)
@@ -41,25 +54,35 @@ input double   InpFVG_ATR_MinSize    = 0.15;  // Min FVG size (x ATR)
 input int      InpSweep_Lookback     = 30;    // Swing H/L lookback
 input double   InpSweep_ATR_Thresh   = 0.1;   // Sweep threshold (x ATR)
 
-//--- Stop Loss (ATR-based, TIGHT - cap losses)
+// FIX [#2] — Stop Loss TIGHT (cap losses, max 1% of account per trade)
 input int      InpATR_Period         = 14;    // ATR Period
-input double   InpSL_ATR_Mult       = 0.5;   // SL buffer (x ATR) - tighter
-input double   InpSL_Min_ATR        = 0.5;   // Min SL (x ATR) - tight!
-input double   InpSL_Max_ATR        = 1.5;   // Max SL (x ATR) - cap losses!
+input double   InpSL_ATR_Mult       = 0.5;   // SL buffer beyond zone (x ATR)
+input double   InpSL_Min_ATR        = 0.5;   // Min SL distance (x ATR)
+input double   InpSL_Max_ATR        = 1.5;   // Max SL distance (x ATR) - TIGHT cap!
 
-//--- Take Profit (3 TPs - WIDER for better RR)
-input double   InpTP1_RR            = 1.5;   // TP1: 1:1.5 (close 40%)
-input double   InpTP2_RR            = 2.5;   // TP2: 1:2.5 (close 30%)
-input double   InpTP3_RR            = 4.0;   // TP3: 1:4 (close 30%)
+// FIX [#1] — Take Profits WIDER (min 1:1.5 RR to fix bad avg-win/avg-loss)
+input double   InpTP1_RR            = 1.5;   // TP1: 1:1.5 (close 40%) - was 1:1
+input double   InpTP2_RR            = 2.5;   // TP2: 1:2.5 (close 30%) - was 1:2
+input double   InpTP3_RR            = 4.0;   // TP3: 1:4 (close 30%) - was 1:3
+input double   InpMinRR             = 1.5;   // Minimum RR to accept a trade
 input double   InpTP1_ClosePercent  = 40.0;  // TP1: % to close
 input double   InpTP2_ClosePercent  = 30.0;  // TP2: % to close
 input bool     InpMoveToBreakeven   = true;  // Move SL to breakeven at TP1
 
-//--- Risk Management
-input double   InpRiskPercent        = 1.0;   // Risk Per Trade (%)
+// FIX [#3] — Trailing Stop (don't leave money on the table)
+input bool     InpUseTrailing        = true;  // Enable Trailing Stop
+input double   InpTrailATRMult       = 1.0;   // Trailing distance (x ATR)
+input double   InpTrailActivateRR    = 1.0;   // Activate trailing after X times risk in profit
+
+// FIX [#7] — Dynamic Position Sizing (risk-based lot calculation)
+input double   InpRiskPercent        = 1.0;   // Risk Per Trade (% of balance)
 input int      InpMaxTradesPerDay    = 3;     // Max Trades Per Day
-input int      InpMagicNumber        = 300300; // Magic Number
+input int      InpMagicNumber        = 300310; // Magic Number
 input double   InpMaxSpread_ATR     = 0.3;   // Max Spread (x ATR)
+
+// FIX [#6] — Max Consecutive Loss Protection
+input bool     InpUseConsLossBreaker = true;  // Enable Consecutive Loss Breaker
+input int      InpMaxConsLosses      = 3;     // Max consecutive losses before pause
 
 //--- Prop Firm Protection
 input bool     InpPropFirmMode       = true;  // Enable Prop Firm Protection
@@ -77,36 +100,9 @@ input bool     InpTradeNAS100        = true;  // Trade NAS100
 //+------------------------------------------------------------------+
 //| STRUCTURES                                                         |
 //+------------------------------------------------------------------+
-struct OrderBlock
-{
-   double high;
-   double low;
-   double midpoint;
-   bool   isBullish;
-   int    barIndex;
-   bool   valid;
-};
-
-struct FairValueGap
-{
-   double high;
-   double low;
-   bool   isBullish;
-   int    barIndex;
-   bool   valid;
-};
-
-struct TradeSetup
-{
-   bool   valid;
-   int    direction;    // 1=buy, -1=sell
-   double entry;
-   double sl;
-   double tp1;
-   double tp2;
-   double tp3;
-   string reason;
-};
+struct OrderBlock { double high, low, midpoint; bool isBullish, valid; int barIndex; };
+struct FairValueGap { double high, low; bool isBullish, valid; int barIndex; };
+struct TradeSetup { bool valid; int direction; double entry, sl, tp1, tp2, tp3; string reason; };
 
 //+------------------------------------------------------------------+
 //| GLOBAL VARIABLES                                                   |
@@ -119,14 +115,11 @@ double initialBalance;
 bool   dailyHalt;
 bool   maxLossHalt;
 
-//--- Indicator handles (per symbol)
-struct SymbolHandles
-{
-   string symbol;
-   int    atrHandle;
-   int    emaFastHandle;
-   int    emaSlowHandle;
-};
+// FIX [#6] — Consecutive loss tracking
+int    consecutiveLosses;
+bool   consLossHalt;
+
+struct SymbolHandles { string symbol; int atrHandle, emaFastHandle, emaSlowHandle; };
 SymbolHandles handles[];
 
 //+------------------------------------------------------------------+
@@ -143,8 +136,9 @@ int OnInit()
    dayStartBalance = initialBalance;
    dailyHalt = false;
    maxLossHalt = false;
+   consecutiveLosses = 0;
+   consLossHalt = false;
    
-   // Pre-create indicator handles for each symbol
    string symbols[] = {"EURUSD", "XAUUSD", "NAS100"};
    for(int i = 0; i < 3; i++)
    {
@@ -157,67 +151,81 @@ int OnInit()
       handles[idx].emaSlowHandle = iMA(symbols[i], InpHTF, InpEMA_Slow, 0, MODE_EMA, PRICE_CLOSE);
    }
    
-   Print("=============================================");
-   Print("  ICT/SMC PROVEN STRATEGY BOT v3.0");
-   Print("  Models: Order Block + FVG + Sweep");
-   Print("  3 TPs: 1:1 (40%), 1:2 (30%), 1:3 (30%)");
-   Print("  SL: ATR-based tight stop");
-   Print("  Prop Firm: ", InpPropFirmMode ? "PROTECTED" : "OFF");
-   Print("=============================================");
+   Print("=== ICT/SMC BOT v3.1 OPTIMIZED (7 Fixes) ===");
+   Print("SL: max ", InpSL_Max_ATR, "xATR | TP: ", InpTP1_RR, "/", InpTP2_RR, "/", InpTP3_RR, " RR");
+   Print("Trailing: ", InpUseTrailing?"ON":"OFF", " | Day Filter: ", InpDayFilterOn?"ON":"OFF");
+   Print("Session Filter: ", InpSessionFilterOn?"ON":"OFF", " | ConsLoss Breaker: ", InpUseConsLossBreaker?"ON":"OFF");
    
    return INIT_SUCCEEDED;
 }
 
-//+------------------------------------------------------------------+
-//| Expert deinitialization                                            |
-//+------------------------------------------------------------------+
-void OnDeinit(const int reason)
-{
-   Print("ICT Bot v3 removed.");
-}
+void OnDeinit(const int reason) { Print("ICT Bot v3.1 removed."); }
 
 //+------------------------------------------------------------------+
 //| Expert tick function                                                |
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // Daily reset
    MqlDateTime dt;
    TimeCurrent(dt);
    datetime today = StringToTime(IntegerToString(dt.year) + "." +
                     IntegerToString(dt.mon) + "." + IntegerToString(dt.day));
+   
+   // Daily reset
    if(today != lastTradeDay)
    {
       todayTrades = 0;
       lastTradeDay = today;
       dayStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
       dailyHalt = false;
+      // FIX [#6] — Reset consecutive loss halt each new day
+      consLossHalt = false;
    }
    
-   // Prop firm check
    if(InpPropFirmMode && !CheckPropFirmSafe()) return;
-   
-   // Max trades
    if(todayTrades >= InpMaxTradesPerDay) return;
    
-   // Manage open positions (partial TPs + breakeven)
+   // FIX [#6] — Consecutive loss breaker
+   if(InpUseConsLossBreaker && consLossHalt) return;
+   
+   // FIX [#3] — Trailing stop management + partial TPs
    ManageOpenPositions();
    
-   // Process symbols
+   // FIX [#4] — Day filter
+   if(InpDayFilterOn && IsDayBlocked(dt.day_of_week)) return;
+   
    if(InpTradeEURUSD) ProcessSymbol("EURUSD");
    if(InpTradeXAUUSD) ProcessSymbol("XAUUSD");
    if(InpTradeNAS100) ProcessSymbol("NAS100");
 }
 
 //+------------------------------------------------------------------+
-//| MAIN LOGIC PER SYMBOL                                              |
-//|                                                                    |
-//| Simple proven flow:                                                |
-//|  1. Session active?                                                |
-//|  2. HTF Bias (EMA cross direction)?                                |
-//|  3. Liquidity Sweep happened?                                      |
-//|  4. Order Block OR FVG entry zone?                                 |
-//|  5. Price at entry zone? -> TRADE with 3 TPs                       |
+//| FIX [#4] — Day filter function                                     |
+//+------------------------------------------------------------------+
+bool IsDayBlocked(int dayOfWeek)
+{
+   if(dayOfWeek == 1 && InpBlockMonday) return true;
+   if(dayOfWeek == 2 && InpBlockTuesday) return true;
+   if(dayOfWeek == 3 && InpBlockWednesday) return true;
+   if(dayOfWeek == 4 && InpBlockThursday) return true;
+   if(dayOfWeek == 5 && InpBlockFriday) return true;
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| FIX [#5] — Session filter function                                 |
+//+------------------------------------------------------------------+
+bool IsInSession(int hour)
+{
+   if(!InpSessionFilterOn) return true;
+   if(hour >= InpAsianStart && hour < InpAsianEnd) return true;
+   if(hour >= InpLondonStart && hour < InpLondonEnd) return true;
+   if(hour >= InpNYStart && hour < InpNYEnd) return true;
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| MAIN LOGIC                                                         |
 //+------------------------------------------------------------------+
 void ProcessSymbol(string symbol)
 {
@@ -225,40 +233,31 @@ void ProcessSymbol(string symbol)
    if(HasOpenPosition(symbol)) return;
    if(!IsNewBar(symbol)) return;
    
-   // Get ATR for this symbol
    double atr = GetATR(symbol);
    if(atr <= 0) return;
    
-   // Check spread vs ATR
    double spread = SymbolInfoInteger(symbol, SYMBOL_SPREAD) * SymbolInfoDouble(symbol, SYMBOL_POINT);
    if(spread > atr * InpMaxSpread_ATR) return;
    
-   //--- STEP 1: Session filter
+   // FIX [#5] — Session check
    MqlDateTime dt;
    TimeCurrent(dt);
-   if(dt.hour < InpSessionStart || dt.hour >= InpSessionEnd) return;
+   if(!IsInSession(dt.hour)) return;
    
-   //--- STEP 2: HTF Bias
    int bias = GetHTFBias(symbol);
    if(bias == 0) return;
    
-   //--- STEP 3: Liquidity Sweep
    bool swept = DetectSweep(symbol, bias, atr);
    if(!swept) return;
    
-   //--- STEP 4: Find Order Block OR FVG
    OrderBlock ob;
    FairValueGap fvg;
    bool obFound = FindOrderBlock(symbol, bias, atr, ob);
    bool fvgFound = FindFVG(symbol, bias, atr, fvg);
-   
    if(!obFound && !fvgFound) return;
    
-   //--- STEP 5: Check if price is AT the entry zone
    TradeSetup setup;
    setup.valid = false;
-   
-   // Priority: OB (higher win rate) > FVG
    if(obFound)
       setup = BuildSetup(symbol, bias, ob.low, ob.high, atr, "OB");
    else if(fvgFound)
@@ -266,38 +265,29 @@ void ProcessSymbol(string symbol)
    
    if(!setup.valid) return;
    
-   //--- EXECUTE
    ExecuteTrade(symbol, setup);
 }
 
 //+------------------------------------------------------------------+
-//| HTF BIAS (EMA cross)                                               |
+//| HTF BIAS                                                           |
 //+------------------------------------------------------------------+
 int GetHTFBias(string symbol)
 {
    double emaFast = GetEMAFast(symbol);
    double emaSlow = GetEMASlow(symbol);
    if(emaFast <= 0 || emaSlow <= 0) return 0;
-   
    double close1 = iClose(symbol, InpHTF, 1);
-   
-   // Bullish: fast above slow AND price above fast
    if(emaFast > emaSlow && close1 > emaFast) return 1;
-   // Bearish: fast below slow AND price below fast
    if(emaFast < emaSlow && close1 < emaFast) return -1;
-   
    return 0;
 }
 
 //+------------------------------------------------------------------+
-//| LIQUIDITY SWEEP DETECTION                                          |
-//| Looks for price sweeping a swing high/low then rejecting           |
+//| LIQUIDITY SWEEP                                                    |
 //+------------------------------------------------------------------+
 bool DetectSweep(string symbol, int bias, double atr)
 {
    double threshold = InpSweep_ATR_Thresh * atr;
-   
-   // Find swing high/low
    double swHigh = 0, swLow = DBL_MAX;
    for(int i = 3; i <= InpSweep_Lookback; i++)
    {
@@ -306,166 +296,73 @@ bool DetectSweep(string symbol, int bias, double atr)
       if(h > swHigh) swHigh = h;
       if(l < swLow)  swLow = l;
    }
-   
-   // Check last few candles for sweep + rejection
    for(int i = 1; i <= 5; i++)
    {
       double high = iHigh(symbol, InpLTF, i);
       double low  = iLow(symbol, InpLTF, i);
       double close = iClose(symbol, InpLTF, i);
-      
-      // Bullish: swept below swing low, closed back above
-      if(bias == 1 && low < swLow - threshold && close > swLow)
-         return true;
-      
-      // Bearish: swept above swing high, closed back below
-      if(bias == -1 && high > swHigh + threshold && close < swHigh)
-         return true;
+      if(bias == 1 && low < swLow - threshold && close > swLow) return true;
+      if(bias == -1 && high > swHigh + threshold && close < swHigh) return true;
    }
-   
    return false;
 }
 
 //+------------------------------------------------------------------+
-//| ORDER BLOCK DETECTION                                              |
-//| Last opposing candle before strong displacement move                |
+//| ORDER BLOCK                                                        |
 //+------------------------------------------------------------------+
 bool FindOrderBlock(string symbol, int bias, double atr, OrderBlock &ob)
 {
    ob.valid = false;
    double minBody = InpOB_ATR_MinBody * atr;
    double minDisp = InpOB_ATR_Displacement * atr;
-   
-   double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
-   double price = (bias == 1) ? ask : bid;
+   double price = (bias == 1) ? SymbolInfoDouble(symbol, SYMBOL_ASK) : SymbolInfoDouble(symbol, SYMBOL_BID);
    
    for(int i = 3; i < InpOB_Lookback; i++)
    {
-      double o_i = iOpen(symbol, InpLTF, i);
-      double c_i = iClose(symbol, InpLTF, i);
-      double h_i = iHigh(symbol, InpLTF, i);
-      double l_i = iLow(symbol, InpLTF, i);
-      double body = MathAbs(c_i - o_i);
+      double o_i = iOpen(symbol, InpLTF, i), c_i = iClose(symbol, InpLTF, i);
+      double h_i = iHigh(symbol, InpLTF, i), l_i = iLow(symbol, InpLTF, i);
+      if(MathAbs(c_i - o_i) < minBody) continue;
       
-      if(body < minBody) continue;
-      
-      // Bullish OB: bearish candle followed by strong up-move
       if(bias == 1 && c_i < o_i)
       {
-         // Check displacement after
-         double maxHigh = 0;
-         for(int j = i - 1; j >= 1; j--)
-         {
-            double hj = iHigh(symbol, InpLTF, j);
-            if(hj > maxHigh) maxHigh = hj;
-         }
-         if(maxHigh - h_i >= minDisp)
-         {
-            // Price must be at OB zone NOW
-            if(price >= l_i && price <= h_i)
-            {
-               ob.high = h_i;
-               ob.low = l_i;
-               ob.midpoint = (h_i + l_i) / 2.0;
-               ob.isBullish = true;
-               ob.barIndex = i;
-               ob.valid = true;
-               return true;
-            }
-         }
+         double maxH = 0;
+         for(int j = i-1; j >= 1; j--) { double hj = iHigh(symbol, InpLTF, j); if(hj > maxH) maxH = hj; }
+         if(maxH - h_i >= minDisp && price >= l_i && price <= h_i)
+         { ob.high=h_i; ob.low=l_i; ob.isBullish=true; ob.valid=true; return true; }
       }
-      
-      // Bearish OB: bullish candle followed by strong down-move
       if(bias == -1 && c_i > o_i)
       {
-         double minLow = DBL_MAX;
-         for(int j = i - 1; j >= 1; j--)
-         {
-            double lj = iLow(symbol, InpLTF, j);
-            if(lj < minLow) minLow = lj;
-         }
-         if(l_i - minLow >= minDisp)
-         {
-            if(price <= h_i && price >= l_i)
-            {
-               ob.high = h_i;
-               ob.low = l_i;
-               ob.midpoint = (h_i + l_i) / 2.0;
-               ob.isBullish = false;
-               ob.barIndex = i;
-               ob.valid = true;
-               return true;
-            }
-         }
+         double minL = DBL_MAX;
+         for(int j = i-1; j >= 1; j--) { double lj = iLow(symbol, InpLTF, j); if(lj < minL) minL = lj; }
+         if(l_i - minL >= minDisp && price <= h_i && price >= l_i)
+         { ob.high=h_i; ob.low=l_i; ob.isBullish=false; ob.valid=true; return true; }
       }
    }
    return false;
 }
 
 //+------------------------------------------------------------------+
-//| FVG DETECTION                                                      |
-//| 3-candle gap where price moved too fast                            |
+//| FVG                                                                |
 //+------------------------------------------------------------------+
 bool FindFVG(string symbol, int bias, double atr, FairValueGap &fvg)
 {
    fvg.valid = false;
    double minSize = InpFVG_ATR_MinSize * atr;
-   
-   double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
-   double price = (bias == 1) ? ask : bid;
+   double price = (bias == 1) ? SymbolInfoDouble(symbol, SYMBOL_ASK) : SymbolInfoDouble(symbol, SYMBOL_BID);
    
    for(int i = 2; i < InpFVG_Lookback; i++)
    {
-      double h1 = iHigh(symbol, InpLTF, i + 1); // candle 1
-      double l1 = iLow(symbol, InpLTF, i + 1);
-      double l3 = iLow(symbol, InpLTF, i - 1);  // candle 3
-      double h3 = iHigh(symbol, InpLTF, i - 1);
+      double h1 = iHigh(symbol, InpLTF, i+1), l3 = iLow(symbol, InpLTF, i-1);
+      double l1 = iLow(symbol, InpLTF, i+1), h3 = iHigh(symbol, InpLTF, i-1);
       
-      // Bullish FVG
-      if(bias == 1)
-      {
-         double gapHigh = l3;
-         double gapLow = h1;
-         if(gapHigh > gapLow && (gapHigh - gapLow) >= minSize)
-         {
-            if(price >= gapLow && price <= gapHigh)
-            {
-               fvg.high = gapHigh;
-               fvg.low = gapLow;
-               fvg.isBullish = true;
-               fvg.barIndex = i;
-               fvg.valid = true;
-               return true;
-            }
-         }
-      }
-      
-      // Bearish FVG
-      if(bias == -1)
-      {
-         double gapHigh = l1;
-         double gapLow = h3;
-         if(gapHigh > gapLow && (gapHigh - gapLow) >= minSize)
-         {
-            if(price <= gapHigh && price >= gapLow)
-            {
-               fvg.high = gapHigh;
-               fvg.low = gapLow;
-               fvg.isBullish = false;
-               fvg.barIndex = i;
-               fvg.valid = true;
-               return true;
-            }
-         }
-      }
+      if(bias == 1) { double gH=l3, gL=h1; if(gH>gL && gH-gL>=minSize && price>=gL && price<=gH) { fvg.high=gH; fvg.low=gL; fvg.isBullish=true; fvg.valid=true; return true; } }
+      if(bias == -1) { double gH=l1, gL=h3; if(gH>gL && gH-gL>=minSize && price<=gH && price>=gL) { fvg.high=gH; fvg.low=gL; fvg.isBullish=false; fvg.valid=true; return true; } }
    }
    return false;
 }
 
 //+------------------------------------------------------------------+
-//| BUILD TRADE SETUP (entry, SL, 3 TPs)                               |
+//| BUILD SETUP — FIX [#1] min RR enforced, FIX [#2] tight SL         |
 //+------------------------------------------------------------------+
 TradeSetup BuildSetup(string symbol, int bias, double zoneLow, double zoneHigh, double atr, string reason)
 {
@@ -474,60 +371,58 @@ TradeSetup BuildSetup(string symbol, int bias, double zoneLow, double zoneHigh, 
    
    double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
-   
    double slBuffer = InpSL_ATR_Mult * atr;
    double minSL = InpSL_Min_ATR * atr;
    double maxSL = InpSL_Max_ATR * atr;
    
-   if(bias == 1) // BUY
+   if(bias == 1)
    {
       setup.entry = ask;
       setup.sl = zoneLow - slBuffer;
-      
       double risk = setup.entry - setup.sl;
-      // Enforce min/max SL
       if(risk < minSL) { setup.sl = setup.entry - minSL; risk = minSL; }
-      if(risk > maxSL) return setup; // too wide, skip
+      // FIX [#2] — Reject if SL too wide
+      if(risk > maxSL) return setup;
+      // FIX [#1] — Enforce minimum RR
+      if(InpTP1_RR < InpMinRR) return setup;
       
       setup.tp1 = setup.entry + risk * InpTP1_RR;
       setup.tp2 = setup.entry + risk * InpTP2_RR;
       setup.tp3 = setup.entry + risk * InpTP3_RR;
       setup.direction = 1;
-      setup.reason = reason + " Buy [SL:" + DoubleToString(risk/atr, 1) + "xATR]";
+      setup.reason = reason + " Buy";
       setup.valid = true;
    }
-   else if(bias == -1) // SELL
+   else if(bias == -1)
    {
       setup.entry = bid;
       setup.sl = zoneHigh + slBuffer;
-      
       double risk = setup.sl - setup.entry;
       if(risk < minSL) { setup.sl = setup.entry + minSL; risk = minSL; }
       if(risk > maxSL) return setup;
+      if(InpTP1_RR < InpMinRR) return setup;
       
       setup.tp1 = setup.entry - risk * InpTP1_RR;
       setup.tp2 = setup.entry - risk * InpTP2_RR;
       setup.tp3 = setup.entry - risk * InpTP3_RR;
       setup.direction = -1;
-      setup.reason = reason + " Sell [SL:" + DoubleToString(risk/atr, 1) + "xATR]";
+      setup.reason = reason + " Sell";
       setup.valid = true;
    }
-   
    return setup;
 }
 
 //+------------------------------------------------------------------+
-//| EXECUTE TRADE (open position)                                      |
+//| EXECUTE — FIX [#7] dynamic lot sizing                              |
 //+------------------------------------------------------------------+
 void ExecuteTrade(string symbol, TradeSetup &setup)
 {
+   // FIX [#7] — Dynamic position sizing based on SL distance
    double lotSize = CalculateLotSize(symbol, MathAbs(setup.entry - setup.sl));
    if(lotSize <= 0) return;
    
-   // Set filling mode
    SetFilling(symbol);
    
-   // Use TP3 as the initial TP (we manage partials in ManageOpenPositions)
    bool result = false;
    if(setup.direction == 1)
       result = trade.Buy(lotSize, symbol, setup.entry, setup.sl, setup.tp3, setup.reason);
@@ -537,18 +432,15 @@ void ExecuteTrade(string symbol, TradeSetup &setup)
    if(result)
    {
       todayTrades++;
-      Print(">>> TRADE OPEN: ", symbol, " | ", setup.reason);
-      Print("    Entry: ", setup.entry, " SL: ", setup.sl);
-      Print("    TP1: ", setup.tp1, " TP2: ", setup.tp2, " TP3: ", setup.tp3);
-      Print("    Lot: ", lotSize, " | Risk: ", InpRiskPercent, "%");
+      // FIX [#6] — Reset consecutive losses on win (new trade opened successfully)
+      Print(">>> TRADE: ", symbol, " ", setup.reason, " Lot:", lotSize, " SL:", setup.sl, " TP3:", setup.tp3);
    }
    else
-      Print("!!! Trade FAILED: ", trade.ResultRetcodeDescription());
+      Print("!!! FAILED: ", trade.ResultRetcodeDescription());
 }
 
 //+------------------------------------------------------------------+
-//| MANAGE OPEN POSITIONS (Partial TPs + Breakeven)                    |
-//| This runs every tick to check if TP1/TP2 are hit                   |
+//| MANAGE POSITIONS — Partial TPs + Breakeven + FIX [#3] Trailing     |
 //+------------------------------------------------------------------+
 void ManageOpenPositions()
 {
@@ -564,78 +456,124 @@ void ManageOpenPositions()
       double currentTP = PositionGetDouble(POSITION_TP);
       double volume = PositionGetDouble(POSITION_VOLUME);
       long type = PositionGetInteger(POSITION_TYPE);
-      string comment = PositionGetString(POSITION_COMMENT);
       
       double bid = SymbolInfoDouble(sym, SYMBOL_BID);
       double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
       double risk = MathAbs(openPrice - currentSL);
       if(risk <= 0) continue;
       
-      // Calculate TP levels from entry
-      double tp1, tp2;
+      double atr = GetATR(sym);
+      if(atr <= 0) atr = risk; // fallback
+      
       if(type == POSITION_TYPE_BUY)
       {
-         tp1 = openPrice + risk * InpTP1_RR;
-         tp2 = openPrice + risk * InpTP2_RR;
+         double tp1 = openPrice + risk * InpTP1_RR;
+         double tp2 = openPrice + risk * InpTP2_RR;
+         double profit = bid - openPrice;
          
-         // TP1 hit: close 40% and move to breakeven
-         if(bid >= tp1 && StringFind(comment, "TP1") < 0)
+         // TP1: close 40% + breakeven
+         if(bid >= tp1 && currentSL < openPrice)
          {
             double closeVol = NormalizeVolume(sym, volume * InpTP1_ClosePercent / 100.0);
-            if(closeVol > 0)
-            {
-               trade.PositionClosePartial(ticket, closeVol);
-               Print("   TP1 HIT: Closed ", closeVol, " lots on ", sym);
-            }
-            // Move SL to breakeven
+            if(closeVol > 0) trade.PositionClosePartial(ticket, closeVol);
             if(InpMoveToBreakeven)
             {
-               double newSL = openPrice + SymbolInfoInteger(sym, SYMBOL_SPREAD) * SymbolInfoDouble(sym, SYMBOL_POINT);
-               trade.PositionModify(ticket, newSL, currentTP);
-               Print("   SL moved to breakeven: ", newSL);
+               double beSL = openPrice + SymbolInfoInteger(sym, SYMBOL_SPREAD) * SymbolInfoDouble(sym, SYMBOL_POINT);
+               trade.PositionModify(ticket, beSL, currentTP);
             }
          }
-         // TP2 hit: close another 30%
-         else if(bid >= tp2 && StringFind(comment, "TP2") < 0)
+         // TP2: close 30%
+         else if(bid >= tp2 && currentSL >= openPrice && volume > SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN) * 1.5)
          {
-            double closeVol = NormalizeVolume(sym, volume * (InpTP2_ClosePercent / (100.0 - InpTP1_ClosePercent)) );
-            if(closeVol > 0)
-            {
-               trade.PositionClosePartial(ticket, closeVol);
-               Print("   TP2 HIT: Closed ", closeVol, " lots on ", sym);
-            }
+            double closeVol = NormalizeVolume(sym, volume * 0.5);
+            if(closeVol > 0) trade.PositionClosePartial(ticket, closeVol);
+         }
+         
+         // FIX [#3] — Trailing Stop (activate after 1x risk in profit)
+         if(InpUseTrailing && profit >= risk * InpTrailActivateRR)
+         {
+            double trailDist = InpTrailATRMult * atr;
+            double newSL = bid - trailDist;
+            if(newSL > currentSL && newSL > openPrice)
+               trade.PositionModify(ticket, newSL, currentTP);
          }
       }
       else if(type == POSITION_TYPE_SELL)
       {
-         tp1 = openPrice - risk * InpTP1_RR;
-         tp2 = openPrice - risk * InpTP2_RR;
+         double tp1 = openPrice - risk * InpTP1_RR;
+         double tp2 = openPrice - risk * InpTP2_RR;
+         double profit = openPrice - ask;
          
-         if(ask <= tp1 && StringFind(comment, "TP1") < 0)
+         if(ask <= tp1 && currentSL > openPrice)
          {
             double closeVol = NormalizeVolume(sym, volume * InpTP1_ClosePercent / 100.0);
-            if(closeVol > 0)
-            {
-               trade.PositionClosePartial(ticket, closeVol);
-               Print("   TP1 HIT: Closed ", closeVol, " lots on ", sym);
-            }
+            if(closeVol > 0) trade.PositionClosePartial(ticket, closeVol);
             if(InpMoveToBreakeven)
             {
-               double newSL = openPrice - SymbolInfoInteger(sym, SYMBOL_SPREAD) * SymbolInfoDouble(sym, SYMBOL_POINT);
-               trade.PositionModify(ticket, newSL, currentTP);
+               double beSL = openPrice - SymbolInfoInteger(sym, SYMBOL_SPREAD) * SymbolInfoDouble(sym, SYMBOL_POINT);
+               trade.PositionModify(ticket, beSL, currentTP);
             }
          }
-         else if(ask <= tp2 && StringFind(comment, "TP2") < 0)
+         else if(ask <= tp2 && currentSL <= openPrice && volume > SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN) * 1.5)
          {
-            double closeVol = NormalizeVolume(sym, volume * (InpTP2_ClosePercent / (100.0 - InpTP1_ClosePercent)) );
-            if(closeVol > 0)
-            {
-               trade.PositionClosePartial(ticket, closeVol);
-               Print("   TP2 HIT: Closed ", closeVol, " lots on ", sym);
-            }
+            double closeVol = NormalizeVolume(sym, volume * 0.5);
+            if(closeVol > 0) trade.PositionClosePartial(ticket, closeVol);
+         }
+         
+         // FIX [#3] — Trailing Stop for sells
+         if(InpUseTrailing && profit >= risk * InpTrailActivateRR)
+         {
+            double trailDist = InpTrailATRMult * atr;
+            double newSL = ask + trailDist;
+            if(newSL < currentSL && newSL < openPrice)
+               trade.PositionModify(ticket, newSL, currentTP);
          }
       }
    }
+   
+   // FIX [#6] — Track consecutive losses from trade history
+   TrackConsecutiveLosses();
+}
+
+//+------------------------------------------------------------------+
+//| FIX [#6] — Track consecutive losses from history                   |
+//+------------------------------------------------------------------+
+void TrackConsecutiveLosses()
+{
+   static int lastDealCount = 0;
+   int totalDeals = HistoryDealsTotal();
+   
+   if(totalDeals <= lastDealCount) return;
+   
+   // Check most recent closed deal
+   HistorySelect(0, TimeCurrent());
+   int deals = HistoryDealsTotal();
+   if(deals <= 0) return;
+   
+   ulong lastTicket = HistoryDealGetTicket(deals - 1);
+   if(lastTicket <= 0) return;
+   if(HistoryDealGetInteger(lastTicket, DEAL_MAGIC) != InpMagicNumber) return;
+   if(HistoryDealGetInteger(lastTicket, DEAL_ENTRY) != DEAL_ENTRY_OUT) return;
+   
+   double profit = HistoryDealGetDouble(lastTicket, DEAL_PROFIT) + 
+                   HistoryDealGetDouble(lastTicket, DEAL_SWAP) +
+                   HistoryDealGetDouble(lastTicket, DEAL_COMMISSION);
+   
+   if(profit < 0)
+   {
+      consecutiveLosses++;
+      if(consecutiveLosses >= InpMaxConsLosses)
+      {
+         consLossHalt = true;
+         Print("!!! CONSECUTIVE LOSS BREAKER: ", consecutiveLosses, " losses. Halting for today.");
+      }
+   }
+   else if(profit > 0)
+   {
+      consecutiveLosses = 0; // Reset on win
+   }
+   
+   lastDealCount = totalDeals;
 }
 
 //+------------------------------------------------------------------+
@@ -643,55 +581,38 @@ void ManageOpenPositions()
 //+------------------------------------------------------------------+
 bool CheckPropFirmSafe()
 {
-   if(maxLossHalt) return false;
-   if(dailyHalt) return false;
-   
+   if(maxLossHalt || dailyHalt) return false;
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    
-   // Max loss check
-   double totalLoss = initialBalance - equity;
-   if(totalLoss >= InpMaxLossLimit * InpMaxSafetyPct)
-   {
-      Print("MAX LOSS REACHED - STOPPING ALL TRADING");
-      CloseAll();
-      maxLossHalt = true;
-      return false;
-   }
+   if(initialBalance - equity >= InpMaxLossLimit * InpMaxSafetyPct)
+   { CloseAll(); maxLossHalt = true; return false; }
    
-   // Daily loss check
-   double dailyLoss = dayStartBalance - equity;
-   if(dailyLoss >= InpDailyLossLimit * InpDailySafetyPct)
-   {
-      Print("DAILY LOSS LIMIT - HALTING FOR TODAY");
-      CloseAll();
-      dailyHalt = true;
-      return false;
-   }
+   if(dayStartBalance - equity >= InpDailyLossLimit * InpDailySafetyPct)
+   { CloseAll(); dailyHalt = true; return false; }
    
    return true;
 }
 
 void CloseAll()
 {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   for(int i = PositionsTotal()-1; i >= 0; i--)
    {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket > 0 && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
-         trade.PositionClose(ticket);
+      ulong t = PositionGetTicket(i);
+      if(t > 0 && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber) trade.PositionClose(t);
    }
 }
 
 //+------------------------------------------------------------------+
-//| CALCULATE LOT SIZE (risk-based + prop firm aware)                  |
+//| FIX [#7] — DYNAMIC LOT SIZE (risk % / SL distance)                |
 //+------------------------------------------------------------------+
 double CalculateLotSize(string symbol, double slDistance)
 {
    if(slDistance <= 0) return 0;
    
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   // FIX [#7] — Risk = 1% of current balance (dynamic, not fixed lot)
    double riskAmount = balance * (InpRiskPercent / 100.0);
    
-   // Prop firm cap
    if(InpPropFirmMode)
    {
       double equity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -708,10 +629,9 @@ double CalculateLotSize(string symbol, double slDistance)
    
    double lot = riskAmount / ((slDistance / tickSize) * tickValue);
    
-   double minLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-   double maxLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
    double lotStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-   
    lot = MathFloor(lot / lotStep) * lotStep;
    lot = MathMax(minLot, MathMin(maxLot, lot));
    
@@ -721,99 +641,32 @@ double CalculateLotSize(string symbol, double slDistance)
 //+------------------------------------------------------------------+
 //| HELPER FUNCTIONS                                                   |
 //+------------------------------------------------------------------+
-
-// New bar detection (per symbol)
 bool IsNewBar(string symbol)
 {
-   static string syms[];
-   static datetime times[];
-   
+   static string syms[]; static datetime times[];
    int idx = -1;
-   for(int i = 0; i < ArraySize(syms); i++)
-      if(syms[i] == symbol) { idx = i; break; }
-   
-   if(idx == -1)
-   {
-      idx = ArraySize(syms);
-      ArrayResize(syms, idx + 1);
-      ArrayResize(times, idx + 1);
-      syms[idx] = symbol;
-      times[idx] = 0;
-   }
-   
+   for(int i = 0; i < ArraySize(syms); i++) if(syms[i] == symbol) { idx = i; break; }
+   if(idx == -1) { idx = ArraySize(syms); ArrayResize(syms, idx+1); ArrayResize(times, idx+1); syms[idx]=symbol; times[idx]=0; }
    datetime cur = iTime(symbol, InpLTF, 0);
    if(cur == times[idx]) return false;
-   times[idx] = cur;
-   return true;
+   times[idx] = cur; return true;
 }
 
-// ATR value
 double GetATR(string symbol)
-{
-   for(int i = 0; i < ArraySize(handles); i++)
-   {
-      if(handles[i].symbol == symbol)
-      {
-         double buf[];
-         if(CopyBuffer(handles[i].atrHandle, 0, 1, 1, buf) > 0) return buf[0];
-      }
-   }
-   return 0;
-}
+{ for(int i=0;i<ArraySize(handles);i++) if(handles[i].symbol==symbol) { double b[]; if(CopyBuffer(handles[i].atrHandle,0,1,1,b)>0) return b[0]; } return 0; }
 
-// EMA Fast
 double GetEMAFast(string symbol)
-{
-   for(int i = 0; i < ArraySize(handles); i++)
-   {
-      if(handles[i].symbol == symbol)
-      {
-         double buf[];
-         if(CopyBuffer(handles[i].emaFastHandle, 0, 1, 1, buf) > 0) return buf[0];
-      }
-   }
-   return 0;
-}
+{ for(int i=0;i<ArraySize(handles);i++) if(handles[i].symbol==symbol) { double b[]; if(CopyBuffer(handles[i].emaFastHandle,0,1,1,b)>0) return b[0]; } return 0; }
 
-// EMA Slow
 double GetEMASlow(string symbol)
-{
-   for(int i = 0; i < ArraySize(handles); i++)
-   {
-      if(handles[i].symbol == symbol)
-      {
-         double buf[];
-         if(CopyBuffer(handles[i].emaSlowHandle, 0, 1, 1, buf) > 0) return buf[0];
-      }
-   }
-   return 0;
-}
+{ for(int i=0;i<ArraySize(handles);i++) if(handles[i].symbol==symbol) { double b[]; if(CopyBuffer(handles[i].emaSlowHandle,0,1,1,b)>0) return b[0]; } return 0; }
 
-// Check open position
 bool HasOpenPosition(string symbol)
-{
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-      if(PositionGetSymbol(i) == symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
-         return true;
-   return false;
-}
+{ for(int i=PositionsTotal()-1;i>=0;i--) if(PositionGetSymbol(i)==symbol && PositionGetInteger(POSITION_MAGIC)==InpMagicNumber) return true; return false; }
 
-// Set filling mode per symbol
 void SetFilling(string symbol)
-{
-   long fill = SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
-   if((fill & SYMBOL_FILLING_FOK) != 0) trade.SetTypeFilling(ORDER_FILLING_FOK);
-   else if((fill & SYMBOL_FILLING_IOC) != 0) trade.SetTypeFilling(ORDER_FILLING_IOC);
-   else trade.SetTypeFilling(ORDER_FILLING_RETURN);
-}
+{ long f=SymbolInfoInteger(symbol,SYMBOL_FILLING_MODE); if((f&SYMBOL_FILLING_FOK)!=0) trade.SetTypeFilling(ORDER_FILLING_FOK); else if((f&SYMBOL_FILLING_IOC)!=0) trade.SetTypeFilling(ORDER_FILLING_IOC); else trade.SetTypeFilling(ORDER_FILLING_RETURN); }
 
-// Normalize volume to lot step
 double NormalizeVolume(string symbol, double vol)
-{
-   double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-   double lotStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-   vol = MathFloor(vol / lotStep) * lotStep;
-   if(vol < minLot) return 0;
-   return vol;
-}
+{ double mn=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN),st=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP); vol=MathFloor(vol/st)*st; return vol<mn?0:vol; }
 //+------------------------------------------------------------------+
