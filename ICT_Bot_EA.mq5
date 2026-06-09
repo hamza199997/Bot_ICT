@@ -35,11 +35,11 @@ input bool     InpUsePWHL            = true; // Use Previous Week High/Low
 input double   InpLiq_Threshold      = 2.0;  // Sweep Threshold (points beyond level)
 
 //--- MSS / CISD Settings (LTF)
-input int      InpMSS_Lookback       = 5;    // MSS Detection Window (LTF candles after sweep)
+input int      InpMSS_Lookback       = 10;   // MSS Detection Window (LTF candles after sweep)
 input double   InpMSS_MinDisplacement = 10.0; // Min Displacement Size (points)
 
 //--- FVG / IFVG Settings (LTF)
-input int      InpFVG_Lookback       = 20;   // FVG Scan Window after MSS
+input int      InpFVG_Lookback       = 30;   // FVG Scan Window after MSS
 input double   InpFVG_MinSize        = 3.0;  // Minimum FVG Size (points)
 
 //--- Order Block Settings (LTF)
@@ -61,13 +61,13 @@ input bool     InpUseHTFBias         = true; // Require entry aligned with HTF b
 input int      InpHTF_EMA_Period     = 50;   // HTF EMA period for bias
 
 //--- OTE (Optimal Trade Entry) Zone
-input double   InpOTE_FibStart       = 0.62; // OTE Zone Start (Fib)
+input double   InpOTE_FibStart       = 0.50; // OTE Zone Start (Fib) - wider for more setups
 input double   InpOTE_FibEnd         = 0.79; // OTE Zone End (Fib)
 input bool     InpRequireOTE         = true; // Require entry in OTE Zone
 
 //--- CRT Model (Confirmation)
 input bool     InpUseCRT             = true;  // Use CRT as confirmation
-input double   InpCRT_SweepBuffer    = 2.0;  // CRT Sweep tolerance (points)
+input double   InpCRT_SweepBuffer    = 0.5;  // CRT Sweep tolerance (points - very tight for more confirms)
 
 //--- SMT Divergence (Confirmation)
 input bool     InpUseSMT             = true;  // Use SMT Divergence confirmation
@@ -87,16 +87,16 @@ input double   InpOF_BodyRatio       = 0.55; // Min body/range ratio for a "stro
 
 //--- PRICE ACTION CONFIRMATION (entry candle quality)
 input bool     InpUsePriceAction     = true; // Use Price Action confirmation
-input double   InpPA_RejWickRatio    = 0.50; // Min rejection-wick ratio at entry
+input double   InpPA_RejWickRatio    = 0.35; // Min rejection-wick ratio (lower = more confirms)
 
 //--- CONFLUENCE GATE (quality filter)
 input bool     InpUseConfluenceGate  = true; // Require minimum confluence score
-input int      InpMinConfluenceScore = 4;    // Min score to take a trade (4 = valid setup; raise for stricter)
+input int      InpMinConfluenceScore = 5;    // Min score (5 = quality entries only)
 
 //--- Risk Management
 input double   InpRiskPercent        = 1.0;  // Risk Per Trade (%)
 input double   InpRR_Ratio           = 3.0;  // Minimum Risk:Reward Ratio
-input int      InpMaxTradesPerDay    = 4;    // Max Trades Per Day
+input int      InpMaxTradesPerDay    = 3;    // Max Trades Per Day
 input int      InpMagicNumber        = 202200; // Magic Number
 input double   InpMaxSpread          = 25.0; // Max Spread (points)
 
@@ -704,7 +704,7 @@ SweepEvent DetectLiquiditySweep(string symbol, LiquidityLevel &levels[])
    double threshold = InpLiq_Threshold * point;
    
    //--- Check last few LTF candles for a sweep
-   for(int bar = 1; bar <= 3; bar++)
+   for(int bar = 1; bar <= 8; bar++)
    {
       double high = iHigh(symbol, InpLTF, bar);
       double low  = iLow(symbol, InpLTF, bar);
@@ -1700,8 +1700,8 @@ bool CheckOrderFlow(string symbol, int direction)
       if(direction == 1 && c > o && bodyRatio >= InpOF_BodyRatio) agree++;
       else if(direction == -1 && c < o && bodyRatio >= InpOF_BodyRatio) agree++;
    }
-   // Need at least half of the lookback candles delivering in our direction
-   return (agree >= (int)MathCeil(InpOF_Lookback / 2.0));
+   // Need at least 1 strong candle delivering in our direction
+   return (agree >= 1);
 }
 
 //+------------------------------------------------------------------+
