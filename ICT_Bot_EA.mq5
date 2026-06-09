@@ -394,8 +394,8 @@ TradeSetup BuildSetup(string symbol, int bias, double zoneLow, double zoneHigh, 
       if(risk < minSL) { setup.sl = setup.entry - minSL; risk = minSL; }
       // FIX [#2] — Reject if SL too wide
       if(risk > maxSL) return setup;
-      // FIX [#1] — Enforce minimum RR
-      if(InpTP1_RR < InpMinRR) return setup;
+      // FIX [#1] — Enforce minimum RR (TP2 is actual close, not TP1 which is just BE trigger)
+      if(InpTP2_RR < InpMinRR) return setup;
       
       setup.tp1 = setup.entry + risk * InpTP1_RR;
       setup.tp2 = setup.entry + risk * InpTP2_RR;
@@ -411,7 +411,7 @@ TradeSetup BuildSetup(string symbol, int bias, double zoneLow, double zoneHigh, 
       double risk = setup.sl - setup.entry;
       if(risk < minSL) { setup.sl = setup.entry + minSL; risk = minSL; }
       if(risk > maxSL) return setup;
-      if(InpTP1_RR < InpMinRR) return setup;
+      if(InpTP2_RR < InpMinRR) return setup;
       
       setup.tp1 = setup.entry - risk * InpTP1_RR;
       setup.tp2 = setup.entry - risk * InpTP2_RR;
