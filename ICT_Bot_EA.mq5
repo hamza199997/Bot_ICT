@@ -76,7 +76,8 @@ input double   InpTrailActivateRR    = 1.0;   // Activate trailing after X times
 
 // FIX [#7] — Dynamic Position Sizing (risk-based lot calculation)
 input double   InpRiskPercent        = 1.0;   // Risk Per Trade (% of balance)
-input int      InpMaxTradesPerDay    = 3;     // Max Trades Per Day
+input int      InpMaxTradesPerDay    = 2;     // Max Trades Per Day TOTAL (1-2 = quality!)
+input int      InpMaxTradesPerSymbol = 1;     // Max Trades Per Symbol Per Day (1 = best!)
 input int      InpMagicNumber        = 300310; // Magic Number
 input double   InpMaxSpread_ATR     = 0.3;   // Max Spread (x ATR)
 
@@ -118,6 +119,10 @@ bool   maxLossHalt;
 // FIX [#6] — Consecutive loss tracking
 int    consecutiveLosses;
 bool   consLossHalt;
+
+// Per-symbol daily trade counter
+struct SymbolDayTrades { string symbol; int count; };
+SymbolDayTrades symDayTrades[];
 
 struct SymbolHandles { string symbol; int atrHandle, emaFastHandle, emaSlowHandle; };
 SymbolHandles handles[];
@@ -180,6 +185,8 @@ void OnTick()
       dailyHalt = false;
       // FIX [#6] — Reset consecutive loss halt each new day
       consLossHalt = false;
+      // Reset per-symbol daily trade counter
+      ArrayResize(symDayTrades, 0);
    }
    
    if(InpPropFirmMode && !CheckPropFirmSafe()) return;
@@ -232,6 +239,9 @@ void ProcessSymbol(string symbol)
    if(!SymbolSelect(symbol, true)) return;
    if(HasOpenPosition(symbol)) return;
    if(!IsNewBar(symbol)) return;
+   
+   // Max trades per symbol per day check
+   if(GetSymbolDayTrades(symbol) >= InpMaxTradesPerSymbol) return;
    
    double atr = GetATR(symbol);
    if(atr <= 0) return;
@@ -432,6 +442,7 @@ void ExecuteTrade(string symbol, TradeSetup &setup)
    if(result)
    {
       todayTrades++;
+      IncrementSymbolDayTrades(symbol);
       // FIX [#6] — Reset consecutive losses on win (new trade opened successfully)
       Print(">>> TRADE: ", symbol, " ", setup.reason, " Lot:", lotSize, " SL:", setup.sl, " TP3:", setup.tp3);
    }
@@ -669,4 +680,24 @@ void SetFilling(string symbol)
 
 double NormalizeVolume(string symbol, double vol)
 { double mn=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN),st=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP); vol=MathFloor(vol/st)*st; return vol<mn?0:vol; }
+
+// Per-symbol daily trade count
+int GetSymbolDayTrades(string symbol)
+{
+   for(int i = 0; i < ArraySize(symDayTrades); i++)
+      if(symDayTrades[i].symbol == symbol) return symDayTrades[i].count;
+   return 0;
+}
+
+void IncrementSymbolDayTrades(string symbol)
+{
+   for(int i = 0; i < ArraySize(symDayTrades); i++)
+   {
+      if(symDayTrades[i].symbol == symbol) { symDayTrades[i].count++; return; }
+   }
+   int idx = ArraySize(symDayTrades);
+   ArrayResize(symDayTrades, idx + 1);
+   symDayTrades[idx].symbol = symbol;
+   symDayTrades[idx].count = 1;
+}
 //+------------------------------------------------------------------+
