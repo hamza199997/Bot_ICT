@@ -54,17 +54,17 @@ input double   InpFVG_ATR_MinSize    = 0.15;  // Min FVG size (x ATR)
 input int      InpSweep_Lookback     = 30;    // Swing H/L lookback
 input double   InpSweep_ATR_Thresh   = 0.1;   // Sweep threshold (x ATR)
 
-// FIX [#2] — Stop Loss TIGHT (cap losses, max 1% of account per trade)
+// FIX [#2] — Stop Loss VERY TIGHT (Gold ATR ~$30 on M5, so 1xATR = ~$30 max loss)
 input int      InpATR_Period         = 14;    // ATR Period
-input double   InpSL_ATR_Mult       = 0.5;   // SL buffer beyond zone (x ATR)
-input double   InpSL_Min_ATR        = 0.5;   // Min SL distance (x ATR)
-input double   InpSL_Max_ATR        = 1.5;   // Max SL distance (x ATR) - TIGHT cap!
+input double   InpSL_ATR_Mult       = 0.3;   // SL buffer beyond zone (x ATR) - VERY tight
+input double   InpSL_Min_ATR        = 0.4;   // Min SL distance (x ATR)
+input double   InpSL_Max_ATR        = 1.0;   // Max SL (x ATR) - HARD CAP 1xATR! (not 1.5!)
 
-// FIX [#1] — Take Profits WIDER (min 1:1.5 RR to fix bad avg-win/avg-loss)
-input double   InpTP1_RR            = 1.5;   // TP1: 1:1.5 (close 40%) - was 1:1
-input double   InpTP2_RR            = 2.5;   // TP2: 1:2.5 (close 30%) - was 1:2
-input double   InpTP3_RR            = 4.0;   // TP3: 1:4 (close 30%) - was 1:3
-input double   InpMinRR             = 1.5;   // Minimum RR to accept a trade
+// FIX [#1] — Take Profits MUCH WIDER (ensure avg win > avg loss ALWAYS)
+input double   InpTP1_RR            = 2.0;   // TP1: 1:2 (close 40%) - ensures win > loss!
+input double   InpTP2_RR            = 3.5;   // TP2: 1:3.5 (close 30%)
+input double   InpTP3_RR            = 6.0;   // TP3: 1:6 (close 30%) - let winners RUN!
+input double   InpMinRR             = 2.0;   // Minimum RR to accept ANY trade (reject < 1:2)
 input double   InpTP1_ClosePercent  = 40.0;  // TP1: % to close
 input double   InpTP2_ClosePercent  = 30.0;  // TP2: % to close
 input bool     InpMoveToBreakeven   = true;  // Move SL to breakeven at TP1
