@@ -60,14 +60,14 @@ input double   InpSL_ATR_Mult       = 0.3;   // SL buffer beyond zone (x ATR) - 
 input double   InpSL_Min_ATR        = 0.4;   // Min SL distance (x ATR)
 input double   InpSL_Max_ATR        = 1.0;   // Max SL (x ATR) - HARD CAP 1xATR! (not 1.5!)
 
-// FIX [#1] — Take Profits MUCH WIDER (ensure avg win > avg loss ALWAYS)
-input double   InpTP1_RR            = 2.0;   // TP1: 1:2 (close 40%) - ensures win > loss!
-input double   InpTP2_RR            = 3.5;   // TP2: 1:3.5 (close 30%)
-input double   InpTP3_RR            = 6.0;   // TP3: 1:6 (close 30%) - let winners RUN!
-input double   InpMinRR             = 2.0;   // Minimum RR to accept ANY trade (reject < 1:2)
-input double   InpTP1_ClosePercent  = 40.0;  // TP1: % to close
-input double   InpTP2_ClosePercent  = 30.0;  // TP2: % to close
-input bool     InpMoveToBreakeven   = true;  // Move SL to breakeven at TP1
+// FIX [#1] — SIMPLE TP SYSTEM (no partial close = fixes avg-win < avg-loss!)
+// At TP1 level: just move SL to breakeven (no close!) -> RISK FREE
+// At TP2 level: FULL close (this is the actual take profit!)
+// Result: Win = full TP2 ($90+), Loss = SL ($45) or Breakeven ($0)
+input double   InpTP1_RR            = 1.5;   // TP1: Move to BREAKEVEN only (no close!)
+input double   InpTP2_RR            = 3.0;   // TP2: FULL CLOSE here (actual TP = 3x Risk!)
+input double   InpMinRR             = 2.0;   // Minimum RR to accept ANY trade
+input bool     InpMoveToBreakeven   = true;  // Move SL to breakeven at TP1 level
 
 // FIX [#3] — Trailing Stop (don't leave money on the table)
 input bool     InpUseTrailing        = true;  // Enable Trailing Stop
@@ -433,11 +433,16 @@ void ExecuteTrade(string symbol, TradeSetup &setup)
    
    SetFilling(symbol);
    
+   // FIX: TP = TP2 (3x Risk) as FULL take profit. No partial close!
+   // TP1 (1.5x) is only used to move SL to breakeven (managed in ManageOpenPositions)
+   double risk = MathAbs(setup.entry - setup.sl);
+   double tp = (setup.direction == 1) ? setup.entry + risk * InpTP2_RR : setup.entry - risk * InpTP2_RR;
+   
    bool result = false;
    if(setup.direction == 1)
-      result = trade.Buy(lotSize, symbol, setup.entry, setup.sl, setup.tp3, setup.reason);
+      result = trade.Buy(lotSize, symbol, setup.entry, setup.sl, tp, setup.reason);
    else
-      result = trade.Sell(lotSize, symbol, setup.entry, setup.sl, setup.tp3, setup.reason);
+      result = trade.Sell(lotSize, symbol, setup.entry, setup.sl, tp, setup.reason);
    
    if(result)
    {
@@ -451,7 +456,8 @@ void ExecuteTrade(string symbol, TradeSetup &setup)
 }
 
 //+------------------------------------------------------------------+
-//| MANAGE POSITIONS — Partial TPs + Breakeven + FIX [#3] Trailing     |
+//| MANAGE POSITIONS — Move to breakeven at TP1 level + Trailing       |
+//| NO partial close! Full close happens at TP2 (set as order TP)      |
 //+------------------------------------------------------------------+
 void ManageOpenPositions()
 {
@@ -474,69 +480,49 @@ void ManageOpenPositions()
       if(risk <= 0) continue;
       
       double atr = GetATR(sym);
-      if(atr <= 0) atr = risk; // fallback
+      if(atr <= 0) atr = risk;
+      
+      double tp1Level = 0;
       
       if(type == POSITION_TYPE_BUY)
       {
-         double tp1 = openPrice + risk * InpTP1_RR;
-         double tp2 = openPrice + risk * InpTP2_RR;
+         tp1Level = openPrice + risk * InpTP1_RR;
          double profit = bid - openPrice;
          
-         // TP1: close 40% + breakeven
-         if(bid >= tp1 && currentSL < openPrice)
+         // Move to breakeven when price hits TP1 level (no close!)
+         if(InpMoveToBreakeven && bid >= tp1Level && currentSL < openPrice)
          {
-            double closeVol = NormalizeVolume(sym, volume * InpTP1_ClosePercent / 100.0);
-            if(closeVol > 0) trade.PositionClosePartial(ticket, closeVol);
-            if(InpMoveToBreakeven)
-            {
-               double beSL = openPrice + SymbolInfoInteger(sym, SYMBOL_SPREAD) * SymbolInfoDouble(sym, SYMBOL_POINT);
-               trade.PositionModify(ticket, beSL, currentTP);
-            }
-         }
-         // TP2: close 30%
-         else if(bid >= tp2 && currentSL >= openPrice && volume > SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN) * 1.5)
-         {
-            double closeVol = NormalizeVolume(sym, volume * 0.5);
-            if(closeVol > 0) trade.PositionClosePartial(ticket, closeVol);
+            double beSL = openPrice + SymbolInfoInteger(sym, SYMBOL_SPREAD) * SymbolInfoDouble(sym, SYMBOL_POINT);
+            trade.PositionModify(ticket, beSL, currentTP);
+            Print("   BE: ", sym, " SL moved to breakeven at ", beSL);
          }
          
          // FIX [#3] — Trailing Stop (activate after 1x risk in profit)
-         if(InpUseTrailing && profit >= risk * InpTrailActivateRR)
+         if(InpUseTrailing && profit >= risk * InpTrailActivateRR && currentSL >= openPrice)
          {
             double trailDist = InpTrailATRMult * atr;
             double newSL = bid - trailDist;
-            if(newSL > currentSL && newSL > openPrice)
+            if(newSL > currentSL)
                trade.PositionModify(ticket, newSL, currentTP);
          }
       }
       else if(type == POSITION_TYPE_SELL)
       {
-         double tp1 = openPrice - risk * InpTP1_RR;
-         double tp2 = openPrice - risk * InpTP2_RR;
+         tp1Level = openPrice - risk * InpTP1_RR;
          double profit = openPrice - ask;
          
-         if(ask <= tp1 && currentSL > openPrice)
+         if(InpMoveToBreakeven && ask <= tp1Level && currentSL > openPrice)
          {
-            double closeVol = NormalizeVolume(sym, volume * InpTP1_ClosePercent / 100.0);
-            if(closeVol > 0) trade.PositionClosePartial(ticket, closeVol);
-            if(InpMoveToBreakeven)
-            {
-               double beSL = openPrice - SymbolInfoInteger(sym, SYMBOL_SPREAD) * SymbolInfoDouble(sym, SYMBOL_POINT);
-               trade.PositionModify(ticket, beSL, currentTP);
-            }
-         }
-         else if(ask <= tp2 && currentSL <= openPrice && volume > SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN) * 1.5)
-         {
-            double closeVol = NormalizeVolume(sym, volume * 0.5);
-            if(closeVol > 0) trade.PositionClosePartial(ticket, closeVol);
+            double beSL = openPrice - SymbolInfoInteger(sym, SYMBOL_SPREAD) * SymbolInfoDouble(sym, SYMBOL_POINT);
+            trade.PositionModify(ticket, beSL, currentTP);
+            Print("   BE: ", sym, " SL moved to breakeven at ", beSL);
          }
          
-         // FIX [#3] — Trailing Stop for sells
-         if(InpUseTrailing && profit >= risk * InpTrailActivateRR)
+         if(InpUseTrailing && profit >= risk * InpTrailActivateRR && currentSL <= openPrice)
          {
             double trailDist = InpTrailATRMult * atr;
             double newSL = ask + trailDist;
-            if(newSL < currentSL && newSL < openPrice)
+            if(newSL < currentSL)
                trade.PositionModify(ticket, newSL, currentTP);
          }
       }
