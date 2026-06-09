@@ -75,6 +75,16 @@ input bool     InpTradeEURUSD        = true; // Trade EURUSD
 input bool     InpTradeXAUUSD        = true; // Trade XAUUSD
 input bool     InpTradeNAS100        = true; // Trade NAS100
 
+//--- PROP FIRM PROTECTION (FundedNext / FTMO / etc.)
+input bool     InpPropFirmMode       = true;   // Enable Prop Firm Protection
+input double   InpAccountSize        = 15000;  // Account Size ($)
+input double   InpDailyLossLimit     = 750;    // Daily Loss Limit ($)
+input double   InpMaxLossLimit       = 1500;   // Max Overall Loss Limit ($)
+input double   InpDailySafetyBuffer  = 0.80;   // Stop trading at % of daily limit (0.80 = 80%)
+input double   InpMaxSafetyBuffer    = 0.85;   // Stop trading at % of max limit (0.85 = 85%)
+input bool     InpCloseAllOnDaily    = true;   // Close all trades if daily limit hit
+input double   InpMaxRiskCapPercent  = 1.0;    // Hard cap risk per trade (% of account)
+
 //+------------------------------------------------------------------+
 //| STRUCTURES                                                         |
 //+------------------------------------------------------------------+
@@ -182,6 +192,13 @@ int todayTrades;
 datetime lastTradeDay;
 datetime lastProcessedBar[];  // Track last processed bar per symbol
 
+//--- Prop Firm tracking
+double dayStartBalance;       // Balance at start of trading day (for daily loss calc)
+double initialBalance;        // Initial account balance (for max loss / floor calc)
+double maxLossFloor;          // Equity floor = initialBalance - MaxLossLimit
+bool   dailyHalt;             // True = halted for the rest of today (daily limit reached)
+bool   accountBlown;          // True = max loss reached, stop completely
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                     |
 //+------------------------------------------------------------------+
@@ -194,6 +211,13 @@ int OnInit()
    todayTrades = 0;
    lastTradeDay = 0;
    
+   //--- Initialize Prop Firm tracking
+   initialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   dayStartBalance = initialBalance;
+   maxLossFloor = initialBalance - InpMaxLossLimit;
+   dailyHalt = false;
+   accountBlown = false;
+   
    Print("╔══════════════════════════════════════════╗");
    Print("║   ICT 2022 CONFLUENCE MODEL EA v2.0     ║");
    Print("╠══════════════════════════════════════════╣");
@@ -204,6 +228,18 @@ int OnInit()
    Print("Risk: ", InpRiskPercent, "% | RR: 1:", InpRR_Ratio);
    Print("CRT: ", InpUseCRT ? "ON" : "OFF", " | SMT: ", InpUseSMT ? "ON" : "OFF");
    Print("OTE Zone: ", InpOTE_FibStart*100, "% - ", InpOTE_FibEnd*100, "%");
+   
+   if(InpPropFirmMode)
+   {
+      Print("─── PROP FIRM PROTECTION: ON ───");
+      Print("Account Size:     $", DoubleToString(InpAccountSize, 2));
+      Print("Daily Loss Limit: $", DoubleToString(InpDailyLossLimit, 2), 
+            " (stop at ", InpDailySafetyBuffer*100, "% = $", 
+            DoubleToString(InpDailyLossLimit*InpDailySafetyBuffer, 2), ")");
+      Print("Max Loss Limit:   $", DoubleToString(InpMaxLossLimit, 2),
+            " (floor = $", DoubleToString(maxLossFloor, 2), ")");
+      Print("Initial Balance:  $", DoubleToString(initialBalance, 2));
+   }
    
    return(INIT_SUCCEEDED);
 }
@@ -221,7 +257,7 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   //--- Reset daily trade counter
+   //--- Reset daily trade counter & daily balance on new day
    MqlDateTime dt;
    TimeCurrent(dt);
    datetime today = StringToTime(IntegerToString(dt.year) + "." + 
@@ -230,6 +266,18 @@ void OnTick()
    {
       todayTrades = 0;
       lastTradeDay = today;
+      // New trading day → reset daily baseline and daily halt
+      dayStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      dailyHalt = false;
+      if(InpPropFirmMode)
+         Print("─── NEW DAY ─── Day Start Balance: $", DoubleToString(dayStartBalance, 2),
+               " | Daily room: $", DoubleToString(InpDailyLossLimit, 2));
+   }
+   
+   //--- PROP FIRM PROTECTION: Check loss limits FIRST
+   if(InpPropFirmMode)
+   {
+      if(!CheckPropFirmLimits()) return; // Halted → no trading
    }
    
    //--- Check max trades per day
@@ -239,6 +287,108 @@ void OnTick()
    if(InpTradeEURUSD) ProcessSymbol("EURUSD");
    if(InpTradeXAUUSD) ProcessSymbol("XAUUSD");
    if(InpTradeNAS100) ProcessSymbol("NAS100");
+}
+
+//+------------------------------------------------------------------+
+//| PROP FIRM PROTECTION - Daily & Max Loss Limits                     |
+//| Returns false if trading should be halted                          |
+//+------------------------------------------------------------------+
+bool CheckPropFirmLimits()
+{
+   //--- If account already blown (max loss reached), never trade again
+   if(accountBlown)
+      return false;
+   
+   double equity  = AccountInfoDouble(ACCOUNT_EQUITY);
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   
+   //========================================================
+   // 1. MAX OVERALL LOSS CHECK (account-ending breach)
+   //    Floor = initialBalance - MaxLossLimit
+   //========================================================
+   double maxLossUsed = initialBalance - equity;        // how much lost overall
+   double maxLossThreshold = InpMaxLossLimit * InpMaxSafetyBuffer;
+   
+   if(maxLossUsed >= maxLossThreshold)
+   {
+      if(!accountBlown)
+      {
+         Print("🛑 MAX LOSS LIMIT REACHED! Lost: $", DoubleToString(maxLossUsed, 2),
+               " / $", DoubleToString(InpMaxLossLimit, 2), " — CLOSING ALL & STOPPING");
+         CloseAllPositions();
+         accountBlown = true;
+      }
+      return false;
+   }
+   
+   //========================================================
+   // 2. DAILY LOSS CHECK
+   //    Daily loss = dayStartBalance - current equity
+   //========================================================
+   double dailyLossUsed = dayStartBalance - equity;     // loss today (uses equity incl. floating)
+   double dailyLossThreshold = InpDailyLossLimit * InpDailySafetyBuffer;
+   
+   if(dailyLossUsed >= dailyLossThreshold)
+   {
+      if(!dailyHalt)
+      {
+         Print("⛔ DAILY LOSS LIMIT REACHED! Today's loss: $", DoubleToString(dailyLossUsed, 2),
+               " / $", DoubleToString(InpDailyLossLimit, 2), " — HALTING FOR TODAY");
+         if(InpCloseAllOnDaily)
+            CloseAllPositions();
+         dailyHalt = true;
+      }
+      return false;
+   }
+   
+   //--- Still within limits
+   if(dailyHalt) return false; // already halted today
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Close all positions opened by this EA                              |
+//+------------------------------------------------------------------+
+void CloseAllPositions()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0)
+      {
+         if(PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+         {
+            string sym = PositionGetString(POSITION_SYMBOL);
+            trade.PositionClose(ticket);
+            Print("Closed position on ", sym, " (prop firm protection)");
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Get remaining daily loss allowance (in $)                          |
+//+------------------------------------------------------------------+
+double GetRemainingDailyAllowance()
+{
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double dailyLossUsed = dayStartBalance - equity;
+   double dailyThreshold = InpDailyLossLimit * InpDailySafetyBuffer;
+   double remaining = dailyThreshold - dailyLossUsed;
+   return MathMax(0, remaining);
+}
+
+//+------------------------------------------------------------------+
+//| Get remaining max loss allowance (in $)                            |
+//+------------------------------------------------------------------+
+double GetRemainingMaxAllowance()
+{
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double maxLossUsed = initialBalance - equity;
+   double maxThreshold = InpMaxLossLimit * InpMaxSafetyBuffer;
+   double remaining = maxThreshold - maxLossUsed;
+   return MathMax(0, remaining);
 }
 
 //+------------------------------------------------------------------+
@@ -1182,14 +1332,44 @@ void ExecuteTrade(string symbol, TradeSetup &setup)
 }
 
 //+------------------------------------------------------------------+
-//| CALCULATE LOT SIZE (Risk-based)                                    |
+//| CALCULATE LOT SIZE (Risk-based + Prop Firm aware)                  |
 //+------------------------------------------------------------------+
 double CalculateLotSize(string symbol, double slDistance)
 {
    if(slDistance <= 0) return 0;
    
    double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   
+   //--- Base risk amount (normal % risk)
    double riskAmount = accountBalance * (InpRiskPercent / 100.0);
+   
+   //========================================================
+   // PROP FIRM: Cap the risk so a single SL hit can NEVER
+   // breach the daily or max loss limits
+   //========================================================
+   if(InpPropFirmMode)
+   {
+      // Hard cap: never risk more than X% of account size
+      double hardCap = InpAccountSize * (InpMaxRiskCapPercent / 100.0);
+      
+      // Remaining room before hitting daily safety threshold
+      double dailyRoom = GetRemainingDailyAllowance();
+      
+      // Remaining room before hitting max-loss safety threshold
+      double maxRoom = GetRemainingMaxAllowance();
+      
+      // Risk must respect ALL constraints (take the smallest)
+      riskAmount = MathMin(riskAmount, hardCap);
+      riskAmount = MathMin(riskAmount, dailyRoom);
+      riskAmount = MathMin(riskAmount, maxRoom);
+      
+      // If no room left, don't trade
+      if(riskAmount <= 0)
+      {
+         Print("⚠️ No risk room left (daily/max limit). Skipping trade on ", symbol);
+         return 0;
+      }
+   }
    
    double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -1204,6 +1384,21 @@ double CalculateLotSize(string symbol, double slDistance)
    
    lotSize = MathFloor(lotSize / lotStep) * lotStep;
    lotSize = MathMax(minLot, MathMin(maxLot, lotSize));
+   
+   //--- Prop firm: verify the actual $ risk at this lot doesn't exceed room
+   if(InpPropFirmMode)
+   {
+      double actualRisk = (slDistance / tickSize) * tickValue * lotSize;
+      double dailyRoom = GetRemainingDailyAllowance();
+      
+      // If even the minimum lot risks more than our daily room → skip
+      if(actualRisk > dailyRoom && lotSize <= minLot)
+      {
+         Print("⚠️ Min lot risk ($", DoubleToString(actualRisk, 2), 
+               ") exceeds daily room ($", DoubleToString(dailyRoom, 2), "). Skipping ", symbol);
+         return 0;
+      }
+   }
    
    return NormalizeDouble(lotSize, 2);
 }
