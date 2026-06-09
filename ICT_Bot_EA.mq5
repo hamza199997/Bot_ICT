@@ -76,6 +76,23 @@ input string   InpSMT_XAUUSD        = "USDX"; // SMT pair for XAUUSD (inverse)
 input string   InpSMT_NAS100        = "US500"; // SMT pair for NAS100 (positive)
 input int      InpSMT_Lookback       = 10;    // SMT Lookback candles
 
+//--- SMC CONFIRMATION (Market Structure + Premium/Discount)
+input bool     InpUseSMC             = true; // Use SMC confirmation
+input int      InpSMC_StructLookback = 30;   // Structure lookback (LTF candles)
+
+//--- ORDER FLOW CONFIRMATION (momentum / delivery)
+input bool     InpUseOrderFlow       = true; // Use Order Flow confirmation
+input int      InpOF_Lookback        = 3;    // Consecutive delivery candles to confirm
+input double   InpOF_BodyRatio       = 0.55; // Min body/range ratio for a "strong" candle
+
+//--- PRICE ACTION CONFIRMATION (entry candle quality)
+input bool     InpUsePriceAction     = true; // Use Price Action confirmation
+input double   InpPA_RejWickRatio    = 0.50; // Min rejection-wick ratio at entry
+
+//--- CONFLUENCE GATE (quality filter)
+input bool     InpUseConfluenceGate  = true; // Require minimum confluence score
+input int      InpMinConfluenceScore = 6;    // Min score to take a trade (higher = stricter)
+
 //--- Risk Management
 input double   InpRiskPercent        = 1.0;  // Risk Per Trade (%)
 input double   InpRR_Ratio           = 3.0;  // Minimum Risk:Reward Ratio
@@ -495,7 +512,50 @@ void ProcessSymbol(string symbol)
       }
    }
    
+   //--- SMC confirmation (market structure + premium/discount)
+   if(InpUseSMC)
+   {
+      if(CheckSMC(symbol, sweep.direction))
+      {
+         confluenceBonus++;
+         setup.reason = setup.reason + " +SMC";
+         Print("[", symbol, "] ✓ SMC: in discount/premium zone");
+      }
+   }
+   
+   //--- Order Flow confirmation (institutional delivery)
+   if(InpUseOrderFlow)
+   {
+      if(CheckOrderFlow(symbol, sweep.direction))
+      {
+         confluenceBonus++;
+         setup.reason = setup.reason + " +OF";
+         Print("[", symbol, "] ✓ Order Flow: delivery aligned");
+      }
+   }
+   
+   //--- Price Action confirmation (rejection at entry)
+   if(InpUsePriceAction)
+   {
+      if(CheckPriceAction(symbol, sweep.direction))
+      {
+         confluenceBonus++;
+         setup.reason = setup.reason + " +PA";
+         Print("[", symbol, "] ✓ Price Action: rejection candle");
+      }
+   }
+   
    setup.confluenceScore += confluenceBonus;
+   
+   //====================================================================
+   // CONFLUENCE GATE - quality filter (skip low-confluence setups)
+   //====================================================================
+   if(InpUseConfluenceGate && setup.confluenceScore < InpMinConfluenceScore)
+   {
+      Print("[", symbol, "] ✗ Skipped: confluence score ", setup.confluenceScore,
+            " < required ", InpMinConfluenceScore, " | ", setup.reason);
+      return;
+   }
    
    //====================================================================
    // PHASE 7: EXECUTE TRADE
@@ -1582,5 +1642,99 @@ int GetHTFBias(string symbol)
    if(close1 > ema) return 1;   // price above HTF EMA -> bullish
    if(close1 < ema) return -1;  // price below HTF EMA -> bearish
    return 0;
+}
+
+//+------------------------------------------------------------------+
+//| SMC CONFIRMATION                                                   |
+//| Confirms the entry aligns with Smart Money Concepts:               |
+//|  - internal market structure agrees with direction                |
+//|  - price is in Discount (for buys) / Premium (for sells) zone      |
+//| Returns true if confirmed.                                         |
+//+------------------------------------------------------------------+
+bool CheckSMC(string symbol, int direction)
+{
+   //--- Build the recent dealing range (highest high / lowest low)
+   double rangeHigh = 0, rangeLow = DBL_MAX;
+   for(int i = 1; i <= InpSMC_StructLookback; i++)
+   {
+      double h = iHigh(symbol, InpLTF, i);
+      double l = iLow(symbol, InpLTF, i);
+      if(h > rangeHigh) rangeHigh = h;
+      if(l < rangeLow)  rangeLow = l;
+   }
+   if(rangeHigh <= rangeLow) return false;
+
+   double mid = (rangeHigh + rangeLow) / 2.0;   // equilibrium (50%)
+   double price = iClose(symbol, InpLTF, 0);
+
+   //--- Premium/Discount logic:
+   //    Buys want DISCOUNT (price below equilibrium)
+   //    Sells want PREMIUM (price above equilibrium)
+   if(direction == 1 && price <= mid) return true;
+   if(direction == -1 && price >= mid) return true;
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| ORDER FLOW CONFIRMATION                                            |
+//| Confirms institutional delivery: a run of strong-bodied candles    |
+//| in the trade direction (consistent order flow / no churn).         |
+//+------------------------------------------------------------------+
+bool CheckOrderFlow(string symbol, int direction)
+{
+   int agree = 0;
+   for(int i = 1; i <= InpOF_Lookback; i++)
+   {
+      double o = iOpen(symbol, InpLTF, i);
+      double c = iClose(symbol, InpLTF, i);
+      double h = iHigh(symbol, InpLTF, i);
+      double l = iLow(symbol, InpLTF, i);
+      double range = h - l;
+      if(range <= 0) continue;
+
+      double body = MathAbs(c - o);
+      double bodyRatio = body / range;
+
+      // Strong candle delivering in the trade direction
+      if(direction == 1 && c > o && bodyRatio >= InpOF_BodyRatio) agree++;
+      else if(direction == -1 && c < o && bodyRatio >= InpOF_BodyRatio) agree++;
+   }
+   // Need at least half of the lookback candles delivering in our direction
+   return (agree >= (int)MathCeil(InpOF_Lookback / 2.0));
+}
+
+//+------------------------------------------------------------------+
+//| PRICE ACTION CONFIRMATION                                          |
+//| Confirms the last closed candle shows a rejection in our favour    |
+//| (long lower wick for buys / long upper wick for sells).            |
+//+------------------------------------------------------------------+
+bool CheckPriceAction(string symbol, int direction)
+{
+   double o = iOpen(symbol, InpLTF, 1);
+   double c = iClose(symbol, InpLTF, 1);
+   double h = iHigh(symbol, InpLTF, 1);
+   double l = iLow(symbol, InpLTF, 1);
+   double range = h - l;
+   if(range <= 0) return false;
+
+   double upperWick = h - MathMax(o, c);
+   double lowerWick = MathMin(o, c) - l;
+
+   if(direction == 1)
+   {
+      // Bullish rejection: long lower wick + close in upper half
+      bool rejection = (lowerWick / range) >= InpPA_RejWickRatio;
+      bool closesUp  = c >= (l + range * 0.5);
+      return (rejection || closesUp);
+   }
+   else if(direction == -1)
+   {
+      // Bearish rejection: long upper wick + close in lower half
+      bool rejection = (upperWick / range) >= InpPA_RejWickRatio;
+      bool closesDown = c <= (h - range * 0.5);
+      return (rejection || closesDown);
+   }
+   return false;
 }
 //+------------------------------------------------------------------+
