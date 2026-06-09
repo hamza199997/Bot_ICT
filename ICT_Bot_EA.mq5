@@ -47,6 +47,19 @@ input int      InpOB_Lookback        = 15;   // OB Scan Window
 input bool     InpUseOB              = true; // Include Order Block entries
 input double   InpOB_MinBody         = 5.0;  // Min OB candle body (points)
 
+//--- ADAPTIVE ENGINE (ATR) - auto-scales to each instrument
+input bool     InpUseATR             = true; // Use ATR-adaptive sizing (RECOMMENDED)
+input int      InpATR_Period         = 14;   // ATR Period
+input double   InpSL_ATR_Mult        = 0.5;  // SL buffer beyond structure (x ATR)
+input double   InpMinSL_ATR_Mult     = 1.2;  // Minimum SL distance (x ATR) - avoids noise stop-outs
+input double   InpMaxSL_ATR_Mult     = 6.0;  // Maximum SL distance (x ATR) - skip oversized stops
+input double   InpMSS_Disp_ATR       = 0.5;  // Min displacement size (x ATR)
+input double   InpFVG_ATR_Mult       = 0.10; // Min FVG size (x ATR)
+
+//--- HTF BIAS FILTER (trade only with higher-timeframe direction)
+input bool     InpUseHTFBias         = true; // Require entry aligned with HTF bias
+input int      InpHTF_EMA_Period     = 50;   // HTF EMA period for bias
+
 //--- OTE (Optimal Trade Entry) Zone
 input double   InpOTE_FibStart       = 0.62; // OTE Zone Start (Fib)
 input double   InpOTE_FibEnd         = 0.79; // OTE Zone End (Fib)
@@ -690,7 +703,8 @@ MSS_Event DetectMSS(string symbol, SweepEvent &sweep)
    mss.occurred = false;
    
    double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-   double minDisp = InpMSS_MinDisplacement * point;
+   double atr = InpUseATR ? GetATR(symbol, InpLTF, InpATR_Period) : 0;
+   double minDisp = (atr > 0) ? InpMSS_Disp_ATR * atr : InpMSS_MinDisplacement * point;
    
    //--- Find the swing to break (opposite side of sweep)
    double swingToBreak = 0;
@@ -798,6 +812,10 @@ TradeSetup FindEntry(string symbol, SweepEvent &sweep, MSS_Event &mss)
    double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
    double currentPrice = (mss.direction == 1) ? ask : bid;
    
+   //--- ATR-based SL buffer (auto-scales per instrument; avoids noise stop-outs)
+   double atr = InpUseATR ? GetATR(symbol, InpLTF, InpATR_Period) : 0;
+   double slBuffer = (atr > 0) ? InpSL_ATR_Mult * atr : 10 * point;
+   
    //--- Calculate OTE Zone (62%-79% retracement of displacement)
    OTE_Zone ote;
    ote.valid = false;
@@ -851,7 +869,7 @@ TradeSetup FindEntry(string symbol, SweepEvent &sweep, MSS_Event &mss)
          {
             entryFound = true;
             entryPrice = ask;
-            slPrice = fvg.low - 10 * point;
+            slPrice = fvg.low - slBuffer;
             entryReason = fvg.isInverse ? "IFVG" : "FVG";
             if(InpRequireOTE) entryReason += "+OTE";
             setup.confluenceScore++;
@@ -860,7 +878,7 @@ TradeSetup FindEntry(string symbol, SweepEvent &sweep, MSS_Event &mss)
          {
             entryFound = true;
             entryPrice = bid;
-            slPrice = fvg.high + 10 * point;
+            slPrice = fvg.high + slBuffer;
             entryReason = fvg.isInverse ? "IFVG" : "FVG";
             if(InpRequireOTE) entryReason += "+OTE";
             setup.confluenceScore++;
@@ -886,7 +904,7 @@ TradeSetup FindEntry(string symbol, SweepEvent &sweep, MSS_Event &mss)
          {
             entryFound = true;
             entryPrice = ask;
-            slPrice = ob.low - 10 * point;
+            slPrice = ob.low - slBuffer;
             entryReason = "OB";
             if(InpRequireOTE) entryReason += "+OTE";
             setup.confluenceScore++;
@@ -895,7 +913,7 @@ TradeSetup FindEntry(string symbol, SweepEvent &sweep, MSS_Event &mss)
          {
             entryFound = true;
             entryPrice = bid;
-            slPrice = ob.high + 10 * point;
+            slPrice = ob.high + slBuffer;
             entryReason = "OB";
             if(InpRequireOTE) entryReason += "+OTE";
             setup.confluenceScore++;
@@ -917,17 +935,41 @@ TradeSetup FindEntry(string symbol, SweepEvent &sweep, MSS_Event &mss)
    
    if(!entryFound) return setup;
    
+   //--- HTF BIAS FILTER: only trade in the higher-timeframe direction
+   if(InpUseHTFBias)
+   {
+      int htfBias = GetHTFBias(symbol);
+      if(htfBias != 0 && htfBias != mss.direction)
+         return setup; // entry against HTF bias -> skip
+   }
+   
    //--- Calculate TP based on RR
    double riskDistance = MathAbs(entryPrice - slPrice);
-   double tpPrice = 0;
    
+   //--- ATR-based SL distance sanity (skip noise-tight & oversized stops)
+   if(atr > 0)
+   {
+      double minSL = InpMinSL_ATR_Mult * atr;
+      double maxSL = InpMaxSL_ATR_Mult * atr;
+      // Enforce a minimum stop distance so spread/noise can't stop us out instantly
+      if(riskDistance < minSL)
+      {
+         if(mss.direction == 1) slPrice = entryPrice - minSL;
+         else                   slPrice = entryPrice + minSL;
+         riskDistance = minSL;
+      }
+      // Skip setups whose structure stop is unreasonably far
+      if(riskDistance > maxSL) return setup;
+   }
+   
+   double tpPrice = 0;
    if(mss.direction == 1)
       tpPrice = entryPrice + riskDistance * InpRR_Ratio;
    else
       tpPrice = entryPrice - riskDistance * InpRR_Ratio;
    
    //--- Validate RR
-   if(riskDistance <= 0 || riskDistance > 500 * point) return setup;
+   if(riskDistance <= 0) return setup;
    
    //--- Build final setup
    setup.valid = true;
@@ -946,7 +988,8 @@ TradeSetup FindEntry(string symbol, SweepEvent &sweep, MSS_Event &mss)
 bool FindFVGAfterMSS(string symbol, MSS_Event &mss, FVG_Zone &resultFVG)
 {
    double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-   double minSize = InpFVG_MinSize * point;
+   double atr = InpUseATR ? GetATR(symbol, InpLTF, InpATR_Period) : 0;
+   double minSize = (atr > 0) ? InpFVG_ATR_Mult * atr : InpFVG_MinSize * point;
    
    int startBar = mss.candleIndex;
    int endBar = MathMax(0, startBar - InpFVG_Lookback);
@@ -1461,5 +1504,83 @@ void SetFillingForSymbol(string symbol)
       trade.SetTypeFilling(ORDER_FILLING_IOC);
    else
       trade.SetTypeFilling(ORDER_FILLING_RETURN);
+}
+
+//+------------------------------------------------------------------+
+//| ATR VALUE (with handle caching per symbol/timeframe/period)        |
+//| Returns the ATR of the last CLOSED candle. 0 if unavailable.       |
+//+------------------------------------------------------------------+
+double GetATR(string symbol, ENUM_TIMEFRAMES tf, int period)
+{
+   static string keys[];
+   static int    handles[];
+
+   string key = symbol + "_" + (string)tf + "_" + (string)period;
+   int idx = -1;
+   for(int i = 0; i < ArraySize(keys); i++)
+   {
+      if(keys[i] == key) { idx = i; break; }
+   }
+   if(idx == -1)
+   {
+      int h = iATR(symbol, tf, period);
+      if(h == INVALID_HANDLE) return 0;
+      idx = ArraySize(keys);
+      ArrayResize(keys, idx + 1);
+      ArrayResize(handles, idx + 1);
+      keys[idx] = key;
+      handles[idx] = h;
+   }
+
+   double buf[];
+   if(CopyBuffer(handles[idx], 0, 1, 1, buf) <= 0) return 0;
+   return buf[0];
+}
+
+//+------------------------------------------------------------------+
+//| EMA VALUE (with handle caching per symbol/timeframe/period)        |
+//+------------------------------------------------------------------+
+double GetEMA(string symbol, ENUM_TIMEFRAMES tf, int period)
+{
+   static string keys[];
+   static int    handles[];
+
+   string key = symbol + "_ema_" + (string)tf + "_" + (string)period;
+   int idx = -1;
+   for(int i = 0; i < ArraySize(keys); i++)
+   {
+      if(keys[i] == key) { idx = i; break; }
+   }
+   if(idx == -1)
+   {
+      int h = iMA(symbol, tf, period, 0, MODE_EMA, PRICE_CLOSE);
+      if(h == INVALID_HANDLE) return 0;
+      idx = ArraySize(keys);
+      ArrayResize(keys, idx + 1);
+      ArrayResize(handles, idx + 1);
+      keys[idx] = key;
+      handles[idx] = h;
+   }
+
+   double buf[];
+   if(CopyBuffer(handles[idx], 0, 1, 1, buf) <= 0) return 0;
+   return buf[0];
+}
+
+//+------------------------------------------------------------------+
+//| HTF BIAS (higher-timeframe direction filter)                       |
+//| 1 = bullish, -1 = bearish, 0 = unclear                             |
+//+------------------------------------------------------------------+
+int GetHTFBias(string symbol)
+{
+   double ema = GetEMA(symbol, InpHTF, InpHTF_EMA_Period);
+   if(ema <= 0) return 0;
+
+   double close1 = iClose(symbol, InpHTF, 1);
+   if(close1 <= 0) return 0;
+
+   if(close1 > ema) return 1;   // price above HTF EMA -> bullish
+   if(close1 < ema) return -1;  // price below HTF EMA -> bearish
+   return 0;
 }
 //+------------------------------------------------------------------+
