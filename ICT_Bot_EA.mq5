@@ -17,19 +17,19 @@
 //+------------------------------------------------------------------+
 
 //--- Symbol & Timeframe
-input ENUM_TIMEFRAMES InpHTF         = PERIOD_H1;     // HTF: Bias (EMA direction)
-input ENUM_TIMEFRAMES InpLTF         = PERIOD_M5;     // LTF: Entry detection
+input ENUM_TIMEFRAMES InpHTF         = PERIOD_H4;     // HTF: Bias (EMA direction)
+input ENUM_TIMEFRAMES InpLTF         = PERIOD_M15;    // LTF: Entry detection (match chart TF!)
 
 //--- [NEW] Kill Zone Filter (ICT precise windows — EST-based)
 input bool     InpKillZoneOn         = true;  // Enable Kill Zone Filter
-input int      InpServerUTCOffset    = 2;     // Server UTC Offset (e.g. 2 for UTC+2)
+input int      InpServerUTCOffset    = 3;     // Server UTC Offset (3 for summer DST)
 input int      InpLondonKZStart      = 2;     // London Kill Zone Start (EST hour)
 input int      InpLondonKZEnd        = 5;     // London Kill Zone End (EST hour)
 input int      InpNYKZStart          = 7;     // New York Kill Zone Start (EST hour)
-input int      InpNYKZEnd            = 10;    // New York Kill Zone End (EST hour)
+input int      InpNYKZEnd            = 11;    // New York Kill Zone End (EST hour)
 input bool     InpAllowLondonClose   = true;  // Allow London Close KZ (10-12 EST)
 input int      InpLondonCloseStart   = 10;    // London Close KZ Start (EST)
-input int      InpLondonCloseEnd     = 12;    // London Close KZ End (EST)
+input int      InpLondonCloseEnd     = 13;    // London Close KZ End (EST)
 
 // Day Filter
 input bool     InpDayFilterOn        = true;  // Enable Day Filter
@@ -58,17 +58,17 @@ input double   InpSweep_ATR_Thresh   = 0.1;   // Sweep threshold (x ATR)
 
 //--- [NEW] CHoCH / BOS (Market Structure Shift) Detection
 input bool     InpUseCHoCH           = true;  // Enable CHoCH/BOS Confirmation
-input int      InpCHoCH_Lookback     = 20;    // CHoCH detection lookback (LTF candles)
-input int      InpSwingStrength      = 3;     // Swing point strength (bars each side)
+input int      InpCHoCH_Lookback     = 30;    // CHoCH detection lookback (LTF candles)
+input int      InpSwingStrength      = 2;     // Swing point strength (bars each side)
 
 //--- [NEW] OTE (Optimal Trade Entry) Fibonacci Zone
 input bool     InpUseOTE             = true;  // Enable OTE Fibonacci Filter
-input double   InpOTE_FibLow         = 0.62;  // OTE Zone Start (Fib level)
+input double   InpOTE_FibLow         = 0.50;  // OTE Zone Start (Fib level) — wider for M15
 input double   InpOTE_FibHigh        = 0.79;  // OTE Zone End (Fib level)
-input int      InpOTE_SwingLookback  = 30;    // Swing lookback for Fib calculation
+input int      InpOTE_SwingLookback  = 25;    // Swing lookback for Fib calculation
 
-//--- [NEW] RSI Divergence Filter
-input bool     InpUseRSIDivergence   = true;  // Enable RSI Divergence Filter
+//--- [NEW] RSI Divergence Filter (SOFT — won't block trade alone)
+input bool     InpUseRSIDivergence   = false; // RSI Divergence (disable if too strict)
 input int      InpRSI_Period         = 14;    // RSI Period
 input int      InpRSI_DivLookback    = 15;    // RSI Divergence lookback (bars)
 
@@ -285,10 +285,7 @@ void ProcessSymbol(string symbol)
    
    // Step 3: [NEW] CHoCH/BOS Confirmation on LTF
    if(InpUseCHoCH && !DetectCHoCH(symbol, bias))
-   {
-      Print("   [SKIP] ", symbol, " — No CHoCH/BOS confirmation");
       return;
-   }
    
    // Step 4: Order Block or FVG presence
    OrderBlock ob;
@@ -299,17 +296,11 @@ void ProcessSymbol(string symbol)
    
    // Step 5: [NEW] OTE Fibonacci Zone check
    if(InpUseOTE && !IsInOTEZone(symbol, bias, atr))
-   {
-      Print("   [SKIP] ", symbol, " — Price not in OTE zone (62-79%)");
       return;
-   }
    
-   // Step 6: [NEW] RSI Divergence confirmation
+   // Step 6: [NEW] RSI Divergence confirmation (optional — soft filter)
    if(InpUseRSIDivergence && !DetectRSIDivergence(symbol, bias))
-   {
-      Print("   [SKIP] ", symbol, " — No RSI divergence confirmation");
       return;
-   }
    
    // Step 7: Build & Execute Setup
    TradeSetup setup;
