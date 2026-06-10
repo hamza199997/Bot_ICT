@@ -22,12 +22,12 @@ input ENUM_TIMEFRAMES InpLTF         = PERIOD_M5;     // LTF: Entry detection
 
 // FIX [#5] — Session Time Filter (only trade during high-probability windows)
 input bool     InpSessionFilterOn    = true;  // Enable Session Filter
-input int      InpAsianStart         = 1;     // Asian Session Start (server hour)
-input int      InpAsianEnd           = 5;     // Asian Session End
-input int      InpLondonStart        = 8;     // London Session Start
-input int      InpLondonEnd          = 12;    // London Session End
-input int      InpNYStart            = 13;    // New York Session Start
-input int      InpNYEnd              = 17;    // New York Session End
+input int      InpAsianStart         = 0;     // Asian Session Start (server hour)
+input int      InpAsianEnd           = 6;     // Asian Session End
+input int      InpLondonStart        = 7;     // London Session Start
+input int      InpLondonEnd          = 13;    // London Session End
+input int      InpNYStart            = 12;    // New York Session Start
+input int      InpNYEnd              = 18;    // New York Session End
 
 // FIX [#4] — Day Filter (block losing days)
 input bool     InpDayFilterOn        = true;  // Enable Day Filter
@@ -80,7 +80,7 @@ input double   InpRiskPercent        = 1.0;   // Risk Per Trade (% of balance)
 input int      InpMaxTradesPerDay    = 2;     // Max Trades Per Day TOTAL (1-2 = quality!)
 input int      InpMaxTradesPerSymbol = 1;     // Max Trades Per Symbol Per Day (1 = best!)
 input int      InpMagicNumber        = 300310; // Magic Number
-input double   InpMaxSpread_ATR     = 0.3;   // Max Spread (x ATR)
+input double   InpMaxSpread_ATR     = 0.5;   // Max Spread (x ATR)
 
 // FIX [#6] — Max Consecutive Loss Protection
 input bool     InpUseConsLossBreaker = true;  // Enable Consecutive Loss Breaker
@@ -287,9 +287,9 @@ int GetHTFBias(string symbol)
    double emaFast = GetEMAFast(symbol);
    double emaSlow = GetEMASlow(symbol);
    if(emaFast <= 0 || emaSlow <= 0) return 0;
-   double close1 = iClose(symbol, InpHTF, 1);
-   if(emaFast > emaSlow && close1 > emaFast) return 1;
-   if(emaFast < emaSlow && close1 < emaFast) return -1;
+   // Relaxed: Only require EMA cross direction (no need for close > EMA)
+   if(emaFast > emaSlow) return 1;
+   if(emaFast < emaSlow) return -1;
    return 0;
 }
 
@@ -307,7 +307,7 @@ bool DetectSweep(string symbol, int bias, double atr)
       if(h > swHigh) swHigh = h;
       if(l < swLow)  swLow = l;
    }
-   for(int i = 1; i <= 5; i++)
+   for(int i = 1; i <= 10; i++)
    {
       double high = iHigh(symbol, InpLTF, i);
       double low  = iLow(symbol, InpLTF, i);
@@ -334,18 +334,21 @@ bool FindOrderBlock(string symbol, int bias, double atr, OrderBlock &ob)
       double h_i = iHigh(symbol, InpLTF, i), l_i = iLow(symbol, InpLTF, i);
       if(MathAbs(c_i - o_i) < minBody) continue;
       
+      // FIX: Add ATR buffer (0.5x ATR) around OB zone so price doesn't need to be exactly inside
+      double zoneBuffer = 0.5 * atr;
+      
       if(bias == 1 && c_i < o_i)
       {
          double maxH = 0;
          for(int j = i-1; j >= 1; j--) { double hj = iHigh(symbol, InpLTF, j); if(hj > maxH) maxH = hj; }
-         if(maxH - h_i >= minDisp && price >= l_i && price <= h_i)
+         if(maxH - h_i >= minDisp && price >= (l_i - zoneBuffer) && price <= (h_i + zoneBuffer))
          { ob.high=h_i; ob.low=l_i; ob.isBullish=true; ob.valid=true; return true; }
       }
       if(bias == -1 && c_i > o_i)
       {
          double minL = DBL_MAX;
          for(int j = i-1; j >= 1; j--) { double lj = iLow(symbol, InpLTF, j); if(lj < minL) minL = lj; }
-         if(l_i - minL >= minDisp && price <= h_i && price >= l_i)
+         if(l_i - minL >= minDisp && price <= (h_i + zoneBuffer) && price >= (l_i - zoneBuffer))
          { ob.high=h_i; ob.low=l_i; ob.isBullish=false; ob.valid=true; return true; }
       }
    }
@@ -366,8 +369,10 @@ bool FindFVG(string symbol, int bias, double atr, FairValueGap &fvg)
       double h1 = iHigh(symbol, InpLTF, i+1), l3 = iLow(symbol, InpLTF, i-1);
       double l1 = iLow(symbol, InpLTF, i+1), h3 = iHigh(symbol, InpLTF, i-1);
       
-      if(bias == 1) { double gH=l3, gL=h1; if(gH>gL && gH-gL>=minSize && price>=gL && price<=gH) { fvg.high=gH; fvg.low=gL; fvg.isBullish=true; fvg.valid=true; return true; } }
-      if(bias == -1) { double gH=l1, gL=h3; if(gH>gL && gH-gL>=minSize && price<=gH && price>=gL) { fvg.high=gH; fvg.low=gL; fvg.isBullish=false; fvg.valid=true; return true; } }
+      // FIX: Add 0.5x ATR buffer around FVG zone so price doesn't need to be exactly inside
+      double zoneBuffer = 0.5 * atr;
+      if(bias == 1) { double gH=l3, gL=h1; if(gH>gL && gH-gL>=minSize && price>=(gL-zoneBuffer) && price<=(gH+zoneBuffer)) { fvg.high=gH; fvg.low=gL; fvg.isBullish=true; fvg.valid=true; return true; } }
+      if(bias == -1) { double gH=l1, gL=h3; if(gH>gL && gH-gL>=minSize && price<=(gH+zoneBuffer) && price>=(gL-zoneBuffer)) { fvg.high=gH; fvg.low=gL; fvg.isBullish=false; fvg.valid=true; return true; } }
    }
    return false;
 }
