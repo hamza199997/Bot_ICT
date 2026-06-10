@@ -17,11 +17,11 @@
 //+------------------------------------------------------------------+
 
 //--- Symbol & Timeframe
-input ENUM_TIMEFRAMES InpHTF         = PERIOD_H4;     // HTF: Bias (EMA direction)
-input ENUM_TIMEFRAMES InpLTF         = PERIOD_M15;    // LTF: Entry detection (match chart TF!)
+input ENUM_TIMEFRAMES InpHTF         = PERIOD_H1;     // HTF: Bias (EMA direction)
+input ENUM_TIMEFRAMES InpLTF         = PERIOD_M5;     // LTF: Entry detection
 
 //--- [NEW] Kill Zone Filter (ICT precise windows — EST-based)
-input bool     InpKillZoneOn         = true;  // Enable Kill Zone Filter
+input bool     InpKillZoneOn         = false; // Kill Zone (OFF for now — test base first)
 input int      InpServerUTCOffset    = 3;     // Server UTC Offset (3 for summer DST)
 input int      InpLondonKZStart      = 2;     // London Kill Zone Start (EST hour)
 input int      InpLondonKZEnd        = 5;     // London Kill Zone End (EST hour)
@@ -37,7 +37,7 @@ input bool     InpBlockMonday        = false; // Block Monday
 input bool     InpBlockTuesday       = false; // Block Tuesday
 input bool     InpBlockWednesday     = false; // Block Wednesday
 input bool     InpBlockThursday      = false; // Block Thursday
-input bool     InpBlockFriday        = true;  // Block Friday (news heavy + manipulation)
+input bool     InpBlockFriday        = false; // Block Friday
 
 //--- HTF Bias
 input int      InpEMA_Fast           = 21;    // Fast EMA (HTF)
@@ -62,8 +62,8 @@ input int      InpCHoCH_Lookback     = 30;    // CHoCH detection lookback (LTF c
 input int      InpSwingStrength      = 2;     // Swing point strength (bars each side)
 
 //--- [NEW] OTE (Optimal Trade Entry) Fibonacci Zone
-input bool     InpUseOTE             = true;  // Enable OTE Fibonacci Filter
-input double   InpOTE_FibLow         = 0.50;  // OTE Zone Start (Fib level) — wider for M15
+input bool     InpUseOTE             = false; // OTE Filter (OFF until base strategy works)
+input double   InpOTE_FibLow         = 0.50;  // OTE Zone Start (Fib level)
 input double   InpOTE_FibHigh        = 0.79;  // OTE Zone End (Fib level)
 input int      InpOTE_SwingLookback  = 25;    // Swing lookback for Fib calculation
 
@@ -92,8 +92,8 @@ input double   InpTrailActivateRR    = 1.5;   // Activate trailing after X times
 
 //--- Position Sizing & Risk
 input double   InpRiskPercent        = 1.0;   // Risk Per Trade (% of balance)
-input int      InpMaxTradesPerDay    = 2;     // Max Trades Per Day TOTAL
-input int      InpMaxTradesPerSymbol = 1;     // Max Trades Per Symbol Per Day
+input int      InpMaxTradesPerDay    = 3;     // Max Trades Per Day TOTAL
+input int      InpMaxTradesPerSymbol = 2;     // Max Trades Per Symbol Per Day
 input int      InpMagicNumber        = 400100; // Magic Number
 input double   InpMaxSpread_ATR     = 0.5;   // Max Spread (x ATR)
 
